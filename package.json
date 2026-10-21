@@ -1,0 +1,32 @@
+{
+  "name": "opencode-swarm-lite",
+  "version": "1.1.0",
+  "description": "Lightweight multi-agent orchestration for OpenCode: adaptive or manual swarm modes, parallel subagent lanes, multimodal workers, dispatch rate limiting, auto-compaction, shared memory. No gates, no bureaucracy.",
+  "type": "module",
+  "author": "Arihant Bharanidhran <arihantbharani@outlook.com>",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "swarm",
+    "multi-agent",
+    "orchestration",
+    "subagents",
+    "multimodal",
+    "rate-limit",
+    "auto-compaction"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@opencode/plugin": "^2.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5"
+  }
+}
