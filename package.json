@@ -21,12 +21,18 @@
     ".": "./src/index.ts"
   },
   "files": [
+    "index.ts",
     "src"
   ],
+  "scripts": {
+    "typecheck": "bunx --bun tsc --noEmit -p tsconfig.json",
+    "test": "bun -e \"const g=new Bun.Glob('test/**/*.test.ts');const files=g.scanSync('.');let bad=0;for(const f of files){console.log('RUN '+f);const r=Bun.spawnSync([process.execPath,f],{stdout:'inherit',stderr:'inherit'});if(r.exitCode){bad=1}}if(files.length===0){console.log('no test files found')}process.exit(bad)\""
+  },
   "dependencies": {
     "@opencode/plugin": "^2.1.2"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5"
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
   }
 }

@@ -15,12 +15,40 @@
  */
 import { Plugin } from "@opencode/plugin"
 import type { Skill } from "@opencode/schema"
-import { DispatchRateLimiter, type RateLimitOptions } from "./rate-limit.js"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-export { DispatchRateLimiter, type RateLimitOptions } from "./rate-limit.js"
+export interface RateLimitOptions {
+  enabled: boolean
+  ratePerSecond: number
+  burst: number
+}
+
+/** Token bucket for subagent dispatches. */
+export class DispatchRateLimiter {
+  private tokens: number
+  private lastRefill: number
+  constructor(private cfg: RateLimitOptions) {
+    this.tokens = cfg.burst
+    this.lastRefill = Date.now()
+  }
+  /** Consume one dispatch token, or throw with a retry hint. */
+  consume(): void {
+    const now = Date.now()
+    const elapsed = (now - this.lastRefill) / 1000
+    this.tokens = Math.min(this.cfg.burst, this.tokens + elapsed * this.cfg.ratePerSecond)
+    this.lastRefill = now
+    if (this.tokens >= 1) {
+      this.tokens -= 1
+      return
+    }
+    const retryMs = Math.ceil(((1 - this.tokens) / this.cfg.ratePerSecond) * 1000)
+    throw new Error(
+      `swarm-lite rate limit: subagent dispatch budget exhausted (burst ${this.cfg.burst}, ${this.cfg.ratePerSecond}/s). Retry in ~${retryMs}ms or batch lanes into fewer dispatches.`,
+    )
+  }
+}
 
 /** Brand a plain string as the schema requires (runtime value is unchanged). */
 const brand = <T>(value: string): T => value as unknown as T

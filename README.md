@@ -8,18 +8,47 @@ Built as a deliberately thin alternative to heavyweight swarm plugins: everythin
 
 ## Install
 
-```sh
-opencode plugin add opencode-swarm-lite
-```
-
-Or locally:
+The package is **not published to npm** yet (`opencode plugin add opencode-swarm-lite`
+returns a 404), so install it from a local checkout.
 
 ```jsonc
-// opencode.json
+// ~/.config/opencode/opencode.json  (or a project opencode.json)
 {
-  "plugins": [{ "package": "C:/path/to/opencode-swarm-lite" }]
+  "plugins": [
+    {
+      "package": "file:///C:/path/to/opencode-swarm-lite",
+      "options": {
+        "mode": "adaptive",
+        "ratePerSecond": 2,
+        "burst": 4,
+        "compactThreshold": 60,
+        "compactCooldownMs": 120000
+      }
+    }
+  ]
 }
 ```
+
+Point the entry at the **directory**, not a file. OpenCode resolves a plugin
+directory to `<dir>/server` or `<dir>/index` and does *not* consult the package
+`exports` map for local paths — the root `index.ts` in this repo is that
+entrypoint, and it is what makes the `options` block above actually reach the
+plugin. A directory without an `index.ts` is dropped **silently**, and every
+option is ignored with no error to show for it.
+
+Restart the service after editing the config:
+
+```sh
+opencode service restart
+```
+
+Then verify it loaded:
+
+```sh
+opencode api get /api/plugin
+```
+
+`swarm-lite` should be listed with `"path": ".../opencode-swarm-lite/index.ts"`.
 
 ## What you get
 
@@ -43,7 +72,7 @@ Switch with `/swarm-mode manual` / `/swarm-mode adaptive`, or set the default in
 {
   "plugins": [
     {
-      "package": "opencode-swarm-lite",
+      "package": "file:///C:/path/to/opencode-swarm-lite",
       "options": {
         "mode": "manual",
         "ratePerSecond": 2,
@@ -84,6 +113,31 @@ Generated payloads (skill content, memory header) carry an invisible Unicode-tag
 ```ts
 import { decodeWatermark } from "opencode-swarm-lite"
 ```
+
+The package ships TypeScript source only (no build step), so it is consumed by
+OpenCode's own TS-capable plugin runtime. Plain-Node consumers cannot `require`
+or `import` it as-is.
+
+## Development
+
+```sh
+bun install
+bun run typecheck   # tsc --noEmit over src/ and test/
+bun run test        # runs every test/**/*.test.ts
+```
+
+Tests are plain Bun scripts — each file is executed directly and exits non-zero
+on failure, so there is no test-runner dependency. `tsconfig.json` includes
+both `src` and `test`.
+
+## Layout
+
+| Path | Purpose |
+| --- | --- |
+| `index.ts` | Root plugin entrypoint — the file OpenCode resolves for a local directory install |
+| `src/index.ts` | Plugin implementation, `DispatchRateLimiter`, `decodeWatermark` |
+| `test/rate-limit.test.ts` | Token-bucket behaviour (burst, refill, rejection messages) |
+| `test/watermark.test.ts` | Watermark encode/decode behaviour |
 
 ## License
 

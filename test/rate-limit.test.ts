@@ -2,9 +2,9 @@
  * Unit test for the DispatchRateLimiter in src/index.ts (rate 2/s, burst 4).
  * Verifies: burst allows 4 immediate dispatches, 5th rejects, recovery after wait.
  */
-import { DispatchRateLimiter, type RateLimitOptions } from "../src/rate-limit.js"
+import { DispatchRateLimiter, type RateLimitOptions } from "../src/index.js"
 
-const cfg = { enabled: true, ratePerSecond: 2, burst: 4 }
+const cfg: RateLimitOptions = { enabled: true, ratePerSecond: 2, burst: 4 }
 const rl = new DispatchRateLimiter(cfg)
 
 let pass = 0
@@ -37,6 +37,28 @@ check("one dispatch succeeds after 550ms refill (got " + recovered + ")", recove
 let second = false
 try { rl.consume(); second = true } catch { /* reject */ }
 check("second dispatch immediately after still rejected", !second)
+
+// 5. the rejection message names the plugin and the configured budget
+check("rejection message names the plugin", msg.includes("swarm-lite rate limit"))
+check("rejection message reports the configured burst and rate", msg.includes(`burst ${cfg.burst}`) && msg.includes(`${cfg.ratePerSecond}/s`))
+
+// 6. a second refill window grants one more dispatch, and only one
+await new Promise((r) => setTimeout(r, 550))
+let refilled = 0
+try { rl.consume(); refilled++ } catch { /* reject */ }
+check("one more dispatch succeeds after a second 550ms refill (got " + refilled + ")", refilled === 1)
+
+let third = false
+try { rl.consume(); third = true } catch { /* reject */ }
+check("dispatch immediately after the second refill is still rejected", !third)
+
+// 7. an independent limiter with burst 1 allows exactly one dispatch
+const solo = new DispatchRateLimiter({ enabled: true, ratePerSecond: 0.01, burst: 1 })
+let soloOk = 0
+try { solo.consume(); soloOk++ } catch { /* reject */ }
+let soloRejected = false
+try { solo.consume() } catch { soloRejected = true }
+check("burst-1 limiter allows 1 dispatch then rejects (got " + soloOk + ")", soloOk === 1 && soloRejected)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
