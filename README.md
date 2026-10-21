@@ -1,6 +1,6 @@
 # opencode-swarm-lite
 
-<!-- opencode-swarm-lite v1.1.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+<!-- opencode-swarm-lite v1.2.1 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
 
 Lightweight multi-agent orchestration for [OpenCode](https://opencode.ai). Parallel subagent lanes with **adaptive or manual swarm shapes**, **multimodal analyst workers**, **dispatch rate limiting**, **auto-compaction**, and a shared markdown memory. No gates, no receipts, no enforced reviews.
 
@@ -19,10 +19,10 @@ returns a 404), so install it from a local checkout.
       "package": "file:///C:/path/to/opencode-swarm-lite",
       "options": {
         "mode": "adaptive",
-        "ratePerSecond": 2,
-        "burst": 4,
-        "compactThreshold": 60,
-        "compactCooldownMs": 120000
+        "ratePerSecond": 4,
+        "burst": 8,
+        "compactThreshold": 40,
+        "compactCooldownMs": 30000
       }
     }
   ]
@@ -55,9 +55,10 @@ opencode api get /api/plugin
 | Command | What it does |
 | --- | --- |
 | `/swarm <task>` | Load the swarm skill and orchestrate the task across parallel lanes |
+| `/swarm-status` | Live dispatch budget + settings (mode, burst, rate, tokens, compaction, memory path) |
 | `/review [scope]` | Optional reviewer lane over your current changes |
 | `/swarm-mode` | Show the current mode |
-| `/swarm-mode adaptive\|manual` | Switch modes at runtime (persisted) |
+| `/swarm-mode adaptive\|manual` | Switch modes at runtime (persisted; extra words after the mode are ignored) |
 
 Plus the `swarm` skill, which teaches any orchestrating agent the full protocol: plan → dispatch → integrate → optional review → memory.
 
@@ -75,10 +76,10 @@ Switch with `/swarm-mode manual` / `/swarm-mode adaptive`, or set the default in
       "package": "file:///C:/path/to/opencode-swarm-lite",
       "options": {
         "mode": "manual",
-        "ratePerSecond": 2,
-        "burst": 4,
-        "compactThreshold": 60,
-        "compactCooldownMs": 120000
+        "ratePerSecond": 4,
+        "burst": 8,
+        "compactThreshold": 40,
+        "compactCooldownMs": 30000
       }
     }
   ]
@@ -96,11 +97,11 @@ The skill ships role briefs for four lane types — dispatch attaches the right 
 
 ## Rate limiting
 
-Subagent dispatches go through a token bucket (default **2 dispatches/sec, burst 4**). When exhausted, the dispatch fails with a retry hint, so the orchestrator waves dispatches instead of flooding providers. Tune or disable via `ratePerSecond`, `burst`, `rateLimitEnabled: false`.
+Subagent dispatches go through a token bucket (default **4 dispatches/sec, burst 8**). **Wave = burst**: put every lane of a wave in a *single* assistant message, up to the burst size, and dispatch lanes in the **background** by default so the wave doesn't block. When the budget is exhausted, the dispatch fails with a retry hint, so the orchestrator waves dispatches instead of flooding providers. Tune or disable via `ratePerSecond`, `burst`, `rateLimitEnabled: false`. Degenerate values (NaN, Infinity, negatives, zero) are sanitized to safe defaults at load, and a backwards system clock can never mint or corrupt the budget.
 
 ## Auto-compaction
 
-When a session's message count crosses `compactThreshold` (default 60), the plugin triggers OpenCode's session compaction, with a `compactCooldownMs` (default 2 min) guard against loops. Lane briefs stay valid across compaction because the skill instructs self-contained briefs.
+When a session's message count crosses `compactThreshold` (default 40), the plugin triggers OpenCode's session compaction, with a `compactCooldownMs` (default 30 s) guard against loops. A failed compaction releases the in-flight guard immediately without burning the cooldown, so the next context build can retry. Lane briefs stay valid across compaction because the skill instructs self-contained briefs.
 
 ## Memory
 
@@ -111,7 +112,9 @@ A single markdown file (default `~/.config/opencode/swarm-memory.md`, override w
 Generated payloads (skill content, memory header) carry an invisible Unicode-tag-character watermark decoding to `SWARMLITE/ARIHANT/2026`, plus visible attribution comments. Verify with:
 
 ```ts
-import { decodeWatermark } from "opencode-swarm-lite"
+import { decodeWatermark, WATERMARK } from "opencode-swarm-lite"
+// decodeWatermark(content) returns the decoded tag-run; compare against the
+// exported WATERMARK's decoded secret to detect provenance.
 ```
 
 The package ships TypeScript source only (no build step), so it is consumed by
@@ -135,7 +138,7 @@ both `src` and `test`.
 | Path | Purpose |
 | --- | --- |
 | `index.ts` | Root plugin entrypoint — the file OpenCode resolves for a local directory install |
-| `src/index.ts` | Plugin implementation, `DispatchRateLimiter`, `decodeWatermark` |
+| `src/index.ts` | Plugin implementation, `DispatchRateLimiter`, `decodeWatermark`, `WATERMARK` |
 | `test/rate-limit.test.ts` | Token-bucket behaviour (burst, refill, rejection messages) |
 | `test/watermark.test.ts` | Watermark encode/decode behaviour |
 

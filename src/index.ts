@@ -27,19 +27,36 @@ export interface RateLimitOptions {
   burst: number
 }
 
+export const DEFAULT_RATE_PER_SECOND = 4
+export const DEFAULT_BURST = 8
+
+/** Clamp a user-supplied number to a finite value >= min, else fallback (rejects NaN/Infinity/negatives). */
+export function num(value: unknown, fallback: number, min: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min ? value : fallback
+}
+
 /** Token bucket for subagent dispatches. */
 export class DispatchRateLimiter {
   private tokens: number
   private lastRefill: number
-  constructor(private cfg: RateLimitOptions) {
-    this.tokens = cfg.burst
+  private cfg: RateLimitOptions
+  constructor(cfg: RateLimitOptions) {
+    // sanitize at the boundary: rate must be finite and > 0, burst must be >= 1
+    this.cfg = {
+      enabled: cfg.enabled !== false,
+      ratePerSecond: num(cfg.ratePerSecond, DEFAULT_RATE_PER_SECOND, 0.01),
+      burst: num(cfg.burst, DEFAULT_BURST, 1),
+    }
+    this.tokens = this.cfg.burst
     this.lastRefill = Date.now()
   }
-  /** Consume one dispatch token, or throw with a retry hint. */
+  /** Consume one dispatch token, or throw with a retry hint. No-op when disabled. */
   consume(): void {
+    if (!this.cfg.enabled) return
     const now = Date.now()
-    const elapsed = (now - this.lastRefill) / 1000
-    this.tokens = Math.min(this.cfg.burst, this.tokens + elapsed * this.cfg.ratePerSecond)
+    // clock-skew safe: never let a backwards wall clock subtract tokens
+    const elapsed = Math.max(0, (now - this.lastRefill) / 1000)
+    this.tokens = Math.max(0, Math.min(this.cfg.burst, this.tokens + elapsed * this.cfg.ratePerSecond))
     this.lastRefill = now
     if (this.tokens >= 1) {
       this.tokens -= 1
@@ -52,12 +69,12 @@ export class DispatchRateLimiter {
   }
   /** Live budget snapshot (read-only, does not consume or refill state). */
   status(): { enabled: boolean; burst: number; ratePerSecond: number; tokens: number } {
-    const elapsed = (Date.now() - this.lastRefill) / 1000
+    const elapsed = Math.max(0, (Date.now() - this.lastRefill) / 1000)
     return {
       enabled: this.cfg.enabled,
       burst: this.cfg.burst,
       ratePerSecond: this.cfg.ratePerSecond,
-      tokens: Math.min(this.cfg.burst, this.tokens + elapsed * this.cfg.ratePerSecond),
+      tokens: Math.max(0, Math.min(this.cfg.burst, this.tokens + elapsed * this.cfg.ratePerSecond)),
     }
   }
 }
@@ -67,14 +84,14 @@ const brand = <T>(value: string): T => value as unknown as T
 
 const AUTHOR = "Arihant Bharanidhran"
 const EMAIL = "arihantbharani@outlook.com"
-const VERSION = "1.2.0"
+const VERSION = "1.2.1"
 
 /**
  * Secret watermark: encodes "SWARMLITE/ARIHANT/2026" as Unicode tag characters
  * (U+E0020–U+E007F). Invisible in rendered text; recoverable by decoding the
  * tag-codepoint run back to ASCII.
  */
-const WATERMARK: string = (() => {
+export const WATERMARK: string = (() => {
   const secret = "SWARMLITE/ARIHANT/2026"
   return Array.from(secret)
     .map((ch) => String.fromCodePoint(0xe0000 + ch.charCodeAt(0)))
@@ -131,7 +148,7 @@ const ROLE_BRIEFS = {
 
 type SwarmMode = "adaptive" | "manual"
 
-function skillContent(mode: SwarmMode, memoryPath: string, waveSize: number): string {
+function skillContent(mode: SwarmMode, memoryPath: string, waveSize: number, rateLimitOn: boolean): string {
   const modeSection =
     mode === "manual"
       ? `## Mode: MANUAL
@@ -184,7 +201,7 @@ ${ROLE_BRIEFS.multimodal}
 - **Background subagents by default** on multi-lane runs - lanes overlap, the user never waits on your turn, and you integrate as results land.
 - Subagents start with fresh context - give each lane everything it needs in its brief.
 - Subagents inherit your model unless the brief says otherwise.
-- **Rate limit**: dispatches are token-bucket limited (burst ${waveSize}). A rejected dispatch carries a retry hint in ms - wait that long, retry that lane once, then consolidate lanes if it still fails.
+- **Rate limit**: ${rateLimitOn ? `dispatches are token-bucket limited (burst ${waveSize}). A rejected dispatch carries a retry hint in ms - wait that long, retry that lane once, then consolidate lanes if it still fails.` : `rate limiting is OFF - there is no dispatch budget to watch, wave size is purely advisory.`}
 - When a lane involves images, PDFs, screenshots, or diagrams, make it a multimodal analyst lane and list the media paths in the brief.
 
 ## Principles
@@ -207,17 +224,16 @@ export default Plugin.define({
     const defaultMode: SwarmMode = ctx.options.mode === "manual" ? "manual" : "adaptive"
     const rateCfg: RateLimitOptions = {
       enabled: ctx.options.rateLimitEnabled !== false,
-      ratePerSecond: typeof ctx.options.ratePerSecond === "number" ? ctx.options.ratePerSecond : 4,
-      burst: typeof ctx.options.burst === "number" ? ctx.options.burst : 8,
+      ratePerSecond: num(ctx.options.ratePerSecond, DEFAULT_RATE_PER_SECOND, 0.01),
+      burst: num(ctx.options.burst, DEFAULT_BURST, 1),
     }
     const limiter = new DispatchRateLimiter(rateCfg)
     /** Lanes that can start in one message (the dispatch burst). */
     const waveSize = rateCfg.burst
+    const rateLimitOn = rateCfg.enabled
 
-    const compactThreshold =
-      typeof ctx.options.compactThreshold === "number" ? ctx.options.compactThreshold : 40
-    const compactCooldownMs =
-      typeof ctx.options.compactCooldownMs === "number" ? ctx.options.compactCooldownMs : 30_000
+    const compactThreshold = num(ctx.options.compactThreshold, 40, 1)
+    const compactCooldownMs = num(ctx.options.compactCooldownMs, 30_000, 0)
     const lastCompaction = new Map<string, number>()
     const compacting = new Set<string>()
 
@@ -252,10 +268,12 @@ export default Plugin.define({
       const last = lastCompaction.get(id) ?? 0
       if (Date.now() - last < compactCooldownMs) return
       compacting.add(id)
-      lastCompaction.set(id, Date.now())
       void ctx.session
         .compact({ sessionID: id })
-        .catch(() => compacting.delete(id))
+        // cooldown starts only on success: a failed compaction releases the guard
+        // without burning the cooldown, so the next context build can retry
+        .then(() => lastCompaction.set(id, Date.now()))
+        .catch(() => {})
         .finally(() => compacting.delete(id))
     })
 
@@ -269,7 +287,7 @@ export default Plugin.define({
         description:
           "Lightweight multi-agent orchestration - adaptive or manual swarm shape, one-message parallel dispatch in waves, multimodal lanes, dispatch rate limiting, auto-compaction, shared memory. Use when the user says 'swarm' or asks to parallelize work across agents.",
         path: brand(skillPath),
-        content: skillContent(initialMode, memoryPath, waveSize),
+        content: skillContent(initialMode, memoryPath, waveSize, rateLimitOn),
       })
     })
 
@@ -278,7 +296,7 @@ export default Plugin.define({
       const mode = await currentMode()
       await ctx.skill.transform((editor) => {
         const existing = editor.get("swarm")
-        if (existing) editor.update("swarm", (s) => (s.content = skillContent(mode, memoryPath, waveSize)))
+        if (existing) editor.update("swarm", (s) => (s.content = skillContent(mode, memoryPath, waveSize, rateLimitOn)))
       })
     }
 
@@ -334,7 +352,8 @@ export default Plugin.define({
         name: "swarm-mode",
         description: "Show or switch swarm mode (adaptive | manual)",
         execute: async ({ sessionID, prompt, delivery }) => {
-          const arg = prompt.text.trim().toLowerCase()
+          // first token decides: "/swarm-mode adaptive please" switches, extra words ignored
+          const arg = prompt.text.trim().toLowerCase().split(/\s+/)[0] ?? ""
           if (arg === "adaptive" || arg === "manual") {
             await ctx.storage.set("mode", arg)
             await refreshSkill()

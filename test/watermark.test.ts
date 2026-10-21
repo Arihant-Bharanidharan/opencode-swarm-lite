@@ -3,14 +3,15 @@
  * Verifies: a watermark encoded the way the plugin encodes it round-trips back
  * to its ASCII secret, and that every non-tag character is dropped.
  */
-import { decodeWatermark } from "../src/index.js"
+import { decodeWatermark, WATERMARK } from "../src/index.js"
 
 const SECRET = "SWARMLITE/ARIHANT/2026"
 
 /**
  * Mirror of the plugin's encoder: each ASCII char -> Unicode tag codepoint
- * (U+E0000 + char code). The plugin's WATERMARK constant is not exported, so
- * the encoded input is reconstructed here.
+ * (U+E0000 + char code). Since v1.2.1 the plugin exports its real WATERMARK
+ * constant, so the tests below both bind to it and re-derive it independently
+ * to verify the encoding contract itself.
  */
 const encodeWatermark = (plain: string): string =>
   Array.from(plain)
@@ -60,6 +61,14 @@ check("U+E0000 decodes to NUL", decodeWatermark(String.fromCodePoint(0xe0000)) =
 check("U+E007F decodes to DEL", decodeWatermark(String.fromCodePoint(0xe007f)) === "\u007f")
 check("just below the tag range is ignored", decodeWatermark(String.fromCodePoint(0xdffff)) === "")
 check("just above the tag range is ignored", decodeWatermark(String.fromCodePoint(0xe0080)) === "")
+
+// 8. (v1.2.1) bind the suite to the plugin's real embedded watermark constant
+check("the real WATERMARK constant decodes to the secret", decodeWatermark(WATERMARK) === SECRET)
+check("the real WATERMARK is pure tag-range codepoints", Array.from(WATERMARK).every((ch) => {
+  const cp = ch.codePointAt(0) ?? 0
+  return cp >= 0xe0000 && cp <= 0xe007f
+}))
+check("the real WATERMARK matches the mirrored encoder exactly", WATERMARK === encoded)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

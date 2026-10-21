@@ -2,7 +2,7 @@
  * Unit test for the DispatchRateLimiter in src/index.ts (rate 2/s, burst 4).
  * Verifies: burst allows 4 immediate dispatches, 5th rejects, recovery after wait.
  */
-import { DispatchRateLimiter, type RateLimitOptions } from "../src/index.js"
+import { DispatchRateLimiter, num, type RateLimitOptions } from "../src/index.js"
 
 const cfg: RateLimitOptions = { enabled: true, ratePerSecond: 2, burst: 4 }
 const rl = new DispatchRateLimiter(cfg)
@@ -77,6 +77,52 @@ check("status() reflects consumption immediately", afterConsume.tokens < 8)
 // 10. status() on a disabled limiter reports enabled=false
 const off = new DispatchRateLimiter({ enabled: false, ratePerSecond: 4, burst: 8 })
 check("status() reports enabled=false when rate limiting is off", off.status().enabled === false)
+
+// 11. (v1.2.1) a disabled limiter never rejects: consume() is a no-op
+const disabled = new DispatchRateLimiter({ enabled: false, ratePerSecond: 4, burst: 1 })
+let disabledThrew = false
+for (let i = 0; i < 5; i++) {
+  try { disabled.consume() } catch { disabledThrew = true }
+}
+check("disabled limiter never rejects (consume() is a no-op)", !disabledThrew)
+check("disabled consume() does not drain tokens", disabled.status().tokens >= 1)
+
+// 12. (v1.2.1) degenerate configs are sanitized: no Infinity/NaN/negative budgets
+const degenerate = new DispatchRateLimiter({ enabled: true, ratePerSecond: 0, burst: -3 })
+const dst = degenerate.status()
+check("rate 0 / burst -3 config is sanitized to finite positive values", dst.ratePerSecond >= 0.01 && dst.burst >= 1)
+const nanCfg = new DispatchRateLimiter({ enabled: true, ratePerSecond: NaN, burst: Infinity })
+const nst = nanCfg.status()
+check("NaN/Infinity config is sanitized to finite values", Number.isFinite(nst.ratePerSecond) && Number.isFinite(nst.burst) && nst.burst >= 1)
+const dg = new DispatchRateLimiter({ enabled: true, ratePerSecond: 0, burst: 0 })
+let dgThrew = false
+let dgHint = ""
+for (let i = 0; i < 64; i++) {
+  try { dg.consume() } catch (e) { dgThrew = true; dgHint = (e as Error).message; break }
+}
+check("sanitized degenerate config still enforces a bucket", dgThrew)
+check("rejection hint never contains Infinity or NaN", dgThrew && !/Infinity|NaN/.test(dgHint))
+
+// 13. (v1.2.1) clock regression: a backwards wall clock never grants tokens or goes negative
+const skewed = new DispatchRateLimiter({ enabled: true, ratePerSecond: 4, burst: 2 })
+skewed.consume(); skewed.consume()
+const realNow = Date.now
+const base = realNow()
+Date.now = () => base - 10_000
+let skewRejected = false
+let skewHint = ""
+try { skewed.consume() } catch (e) { skewRejected = true; skewHint = (e as Error).message }
+const skewTokens = skewed.status().tokens
+Date.now = realNow
+check("backward clock step grants no free dispatch", skewRejected)
+check("tokens never go negative under clock regression", Number.isFinite(skewTokens) && skewTokens >= 0)
+check("rejection hint stays finite under clock regression", skewRejected && !/Infinity|NaN/.test(skewHint))
+
+// 14. (v1.2.1) num() boundary behavior: rejects NaN, Infinity, and values below the floor
+check("num rejects NaN", num(NaN, 4, 0.01) === 4)
+check("num rejects Infinity", num(Infinity, 4, 0.01) === 4)
+check("num rejects values below the floor", num(0, 4, 0.01) === 4 && num(-1, 8, 1) === 8)
+check("num accepts valid values", num(5, 4, 0.01) === 5 && num(30, 40, 1) === 30)
 
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
