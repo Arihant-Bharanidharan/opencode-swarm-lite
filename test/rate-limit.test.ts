@@ -60,5 +60,23 @@ let soloRejected = false
 try { solo.consume() } catch { soloRejected = true }
 check("burst-1 limiter allows 1 dispatch then rejects (got " + soloOk + ")", soloOk === 1 && soloRejected)
 
+// 8. status() on a fresh limiter reports the full configured burst
+const fresh = new DispatchRateLimiter({ enabled: true, ratePerSecond: 4, burst: 8 })
+const fst = fresh.status()
+check("status() on a fresh limiter shows a full burst", fst.tokens === 8)
+check("status() reports configured burst, rate, and enabled flag", fst.burst === 8 && fst.ratePerSecond === 4 && fst.enabled === true)
+
+// 9. status() is read-only: it does not consume tokens
+const before = fresh.status().tokens
+fresh.status()
+check("calling status() twice does not drain the budget", fresh.status().tokens >= before)
+fresh.consume()
+const afterConsume = fresh.status()
+check("status() reflects consumption immediately", afterConsume.tokens < 8)
+
+// 10. status() on a disabled limiter reports enabled=false
+const off = new DispatchRateLimiter({ enabled: false, ratePerSecond: 4, burst: 8 })
+check("status() reports enabled=false when rate limiting is off", off.status().enabled === false)
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

@@ -6,10 +6,12 @@
  *
  * Features:
  *  - Adaptive or manual swarm modes (orchestrator decides vs user decides)
- *  - Parallel subagent lanes incl. multimodal analysts
- *  - Token-bucket rate limiting on subagent spawns
- *  - Auto-compaction of long sessions
+ *  - Parallel subagent lanes incl. multimodal analysts, dispatched in waves
+ *    (all lanes of a wave in one message; background by default)
+ *  - Token-bucket rate limiting on subagent spawns (burst = wave size)
+ *  - Auto-compaction of long sessions (tuned for fast context turnover)
  *  - Shared markdown memory file
+ *  - /swarm-status: live dispatch budget + settings at a glance
  *
  * No gates, no receipts, no enforced reviews.
  */
@@ -48,6 +50,16 @@ export class DispatchRateLimiter {
       `swarm-lite rate limit: subagent dispatch budget exhausted (burst ${this.cfg.burst}, ${this.cfg.ratePerSecond}/s). Retry in ~${retryMs}ms or batch lanes into fewer dispatches.`,
     )
   }
+  /** Live budget snapshot (read-only, does not consume or refill state). */
+  status(): { enabled: boolean; burst: number; ratePerSecond: number; tokens: number } {
+    const elapsed = (Date.now() - this.lastRefill) / 1000
+    return {
+      enabled: this.cfg.enabled,
+      burst: this.cfg.burst,
+      ratePerSecond: this.cfg.ratePerSecond,
+      tokens: Math.min(this.cfg.burst, this.tokens + elapsed * this.cfg.ratePerSecond),
+    }
+  }
 }
 
 /** Brand a plain string as the schema requires (runtime value is unchanged). */
@@ -55,7 +67,7 @@ const brand = <T>(value: string): T => value as unknown as T
 
 const AUTHOR = "Arihant Bharanidhran"
 const EMAIL = "arihantbharani@outlook.com"
-const VERSION = "1.1.0"
+const VERSION = "1.2.0"
 
 /**
  * Secret watermark: encodes "SWARMLITE/ARIHANT/2026" as Unicode tag characters
@@ -119,7 +131,7 @@ const ROLE_BRIEFS = {
 
 type SwarmMode = "adaptive" | "manual"
 
-function skillContent(mode: SwarmMode, memoryPath: string): string {
+function skillContent(mode: SwarmMode, memoryPath: string, waveSize: number): string {
   const modeSection =
     mode === "manual"
       ? `## Mode: MANUAL
@@ -167,10 +179,12 @@ ${ROLE_BRIEFS.multimodal}
 
 ## Dispatching
 
-- Independent lanes run in parallel; use background subagents if the user shouldn't wait.
+- **One message per wave**: put every lane's \`subagent\` call in the SAME assistant message so they start together - one turn for the whole wave, not one turn per lane.
+- Wave size = ~${waveSize} lanes (the dispatch burst). More lanes than that? Dispatch the next wave while earlier lanes are still running.
+- **Background subagents by default** on multi-lane runs - lanes overlap, the user never waits on your turn, and you integrate as results land.
 - Subagents start with fresh context - give each lane everything it needs in its brief.
 - Subagents inherit your model unless the brief says otherwise.
-- **Rate limit**: subagent dispatches are token-bucket limited (default 2/s, burst 4). If a dispatch is rejected with a rate-limit error, wait and retry, or consolidate lanes. Dispatch in waves rather than bursts.
+- **Rate limit**: dispatches are token-bucket limited (burst ${waveSize}). A rejected dispatch carries a retry hint in ms - wait that long, retry that lane once, then consolidate lanes if it still fails.
 - When a lane involves images, PDFs, screenshots, or diagrams, make it a multimodal analyst lane and list the media paths in the brief.
 
 ## Principles
@@ -193,15 +207,17 @@ export default Plugin.define({
     const defaultMode: SwarmMode = ctx.options.mode === "manual" ? "manual" : "adaptive"
     const rateCfg: RateLimitOptions = {
       enabled: ctx.options.rateLimitEnabled !== false,
-      ratePerSecond: typeof ctx.options.ratePerSecond === "number" ? ctx.options.ratePerSecond : 2,
-      burst: typeof ctx.options.burst === "number" ? ctx.options.burst : 4,
+      ratePerSecond: typeof ctx.options.ratePerSecond === "number" ? ctx.options.ratePerSecond : 4,
+      burst: typeof ctx.options.burst === "number" ? ctx.options.burst : 8,
     }
     const limiter = new DispatchRateLimiter(rateCfg)
+    /** Lanes that can start in one message (the dispatch burst). */
+    const waveSize = rateCfg.burst
 
     const compactThreshold =
-      typeof ctx.options.compactThreshold === "number" ? ctx.options.compactThreshold : 60
+      typeof ctx.options.compactThreshold === "number" ? ctx.options.compactThreshold : 40
     const compactCooldownMs =
-      typeof ctx.options.compactCooldownMs === "number" ? ctx.options.compactCooldownMs : 120_000
+      typeof ctx.options.compactCooldownMs === "number" ? ctx.options.compactCooldownMs : 30_000
     const lastCompaction = new Map<string, number>()
     const compacting = new Set<string>()
 
@@ -251,9 +267,9 @@ export default Plugin.define({
         id: brand<Skill.ID>("swarm"),
         name: brand<Skill.Name>("Swarm"),
         description:
-          "Lightweight multi-agent orchestration - adaptive or manual swarm shape, parallel lanes incl. multimodal analysts, dispatch rate limiting, auto-compaction, shared memory. Use when the user says 'swarm' or asks to parallelize work across agents.",
+          "Lightweight multi-agent orchestration - adaptive or manual swarm shape, one-message parallel dispatch in waves, multimodal lanes, dispatch rate limiting, auto-compaction, shared memory. Use when the user says 'swarm' or asks to parallelize work across agents.",
         path: brand(skillPath),
-        content: skillContent(initialMode, memoryPath),
+        content: skillContent(initialMode, memoryPath, waveSize),
       })
     })
 
@@ -262,7 +278,7 @@ export default Plugin.define({
       const mode = await currentMode()
       await ctx.skill.transform((editor) => {
         const existing = editor.get("swarm")
-        if (existing) editor.update("swarm", (s) => (s.content = skillContent(mode, memoryPath)))
+        if (existing) editor.update("swarm", (s) => (s.content = skillContent(mode, memoryPath, waveSize)))
       })
     }
 
@@ -281,7 +297,7 @@ export default Plugin.define({
             ...prompt,
             sessionID,
             delivery,
-            text: `Load the \`swarm\` skill and orchestrate this task: ${prompt.text}\n\n${shapeGuidance} Split into independent lanes, dispatch them in parallel, integrate, and verify. No review step unless I asked for one.`,
+            text: `Load the \`swarm\` skill and orchestrate this task: ${prompt.text}\n\n${shapeGuidance} Split into independent lanes and dispatch them in parallel - every lane in ONE message, in waves of ~${waveSize}. Integrate and verify. No review step unless I asked for one.`,
           })
         },
       })
@@ -295,6 +311,21 @@ export default Plugin.define({
             sessionID,
             delivery,
             text: `Load the \`swarm\` skill, then dispatch a single reviewer lane over my current changes. Use the Reviewer lane role brief. Scope: ${prompt.text || "all current changes"}. Report findings ranked by severity; do not edit files.`,
+          })
+        },
+      })
+
+      editor.add({
+        name: "swarm-status",
+        description: "Show swarm mode, dispatch budget, and compaction settings",
+        execute: async ({ sessionID, prompt, delivery }) => {
+          const mode = await currentMode()
+          const s = limiter.status()
+          await ctx.session.prompt({
+            ...prompt,
+            sessionID,
+            delivery,
+            text: `Swarm status - reply with exactly these lines:\n- Mode: ${mode.toUpperCase()} (default ${defaultMode.toUpperCase()})\n- Dispatch budget: burst ${s.burst} at ${s.ratePerSecond}/s, rate limiting ${s.enabled ? "ON" : "OFF"}, ~${s.tokens.toFixed(1)} of ${s.burst} tokens available now\n- Dispatch wave size: ~${waveSize} lanes per message\n- Auto-compaction: every ${compactThreshold} messages, ${compactCooldownMs / 1000}s cooldown\n- Memory file: ${memoryPath}`,
           })
         },
       })
