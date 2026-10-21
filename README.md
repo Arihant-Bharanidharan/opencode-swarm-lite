@@ -1,8 +1,8 @@
 # opencode-swarm-lite
 
-<!-- opencode-swarm-lite v1.2.1 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+<!-- opencode-swarm-lite v1.3.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
 
-Lightweight multi-agent orchestration for [OpenCode](https://opencode.ai). Parallel subagent lanes with **adaptive or manual swarm shapes**, **multimodal analyst workers**, **dispatch rate limiting**, **auto-compaction**, and a shared markdown memory. No gates, no receipts, no enforced reviews.
+Lightweight multi-agent orchestration for [OpenCode](https://opencode.ai). Parallel subagent lanes with **adaptive or manual swarm shapes**, a **lane doctrine** (working rules, not permission rails), **lane-to-lane relay communication**, **specialist role briefs**, **refine/reiterate quality loops**, **multimodal analyst workers**, **dispatch rate limiting**, **auto-compaction**, and a shared markdown memory. No gates, no receipts, no enforced reviews.
 
 Built as a deliberately thin alternative to heavyweight swarm plugins: everything is a plain prompt contract or a small, inspectable mechanism.
 
@@ -21,6 +21,7 @@ returns a 404), so install it from a local checkout.
         "mode": "adaptive",
         "ratePerSecond": 4,
         "burst": 8,
+        "refinePasses": 1,
         "compactThreshold": 40,
         "compactCooldownMs": 30000
       }
@@ -29,119 +30,248 @@ returns a 404), so install it from a local checkout.
 }
 ```
 
-Point the entry at the **directory**, not a file. OpenCode resolves a plugin
-directory to `<dir>/server` or `<dir>/index` and does *not* consult the package
-`exports` map for local paths — the root `index.ts` in this repo is that
-entrypoint, and it is what makes the `options` block above actually reach the
-plugin. A directory without an `index.ts` is dropped **silently**, and every
-option is ignored with no error to show for it.
+## How it works
 
-Restart the service after editing the config:
+### Modes
 
-```sh
-opencode service restart
-```
+| Mode | Swarm shape |
+| --- | --- |
+| `adaptive` (default) | The orchestrator derives the lane count and hierarchy from the work itself. The skill carries a lane rubric (1 lane for a single focused task, 2-3 for two or three workstreams, 4-6 for four to six, 7+ only for genuinely parallel large efforts) plus an explicit anti-default guarantee: **there is no fixed lane count, and the orchestrator is told to never say "I'll use the default N lanes."** A per-task word-count hint (`laneHint`) is embedded in every `/swarm` expansion so the shape tracks the prompt size, not a constant. |
+| `manual` | You decide. The orchestrator confirms the subagent count and hierarchy with you before dispatching (unless you already stated them). |
 
-Then verify it loaded:
+### Dispatch behavior
 
-```sh
-opencode api get /api/plugin
-```
+Lanes dispatch in **waves through one assistant message** containing multiple `task`
+tool calls (rate-limit aware: token bucket, default 4/s with burst 8). Every lane brief is
+built from a template that now includes, in order:
 
-`swarm-lite` should be listed with `"path": ".../opencode-swarm-lite/index.ts"`.
+1. The **lane doctrine** — seven working rules that keep parallel lanes coherent:
+   evidence over assertion, scope fence, read-before-write, one-truth-per-fact,
+   fail-loudly-early, a deterministic finish (`STATUS | FINDINGS | HANDOFFS`), and
+   no self-promotion.
+2. A **specialist role brief** — architect, builder, verifier, coder, researcher,
+   reviewer, or multimodal analyst (see below).
+3. The task-specific instructions from the orchestrator.
+4. The **relay protocol** — how to read and append to the shared relay file.
 
-## What you get
+Multimodal lanes are tagged (analyst role brief + media path requirements), and
+dispatch is throttled through a token bucket with a clear error message on rejection.
+
+### Lane doctrine
+
+Doctrine is a **prompt contract, not a permission system** — it does not gate, block,
+or receipt anything. It exists because parallel lanes doing redundant or contradictory
+work is the main source of swarm errors. The seven rules:
+
+1. **Evidence over assertion.** Every claim carries file:line, command output, or an
+   explicit "I could not verify X".
+2. **Scope fence.** A lane does exactly its brief; out-of-scope discoveries become
+   relay handoffs, not side quests.
+3. **Read before write.** Read the relay and any file you will touch before touching it.
+4. **One truth per fact.** Cite relay-verified facts instead of re-deriving them.
+5. **Fail loudly, early.** Surface blockers in the relay immediately.
+6. **Deterministic finish.** Every lane ends with `STATUS | FINDINGS | HANDOFFS`.
+7. **No self-promotion.** Reports describe the work, not how well the work was done.
+
+### Lane-to-lane communication (relay file)
+
+Lanes coordinate through an append-only markdown relay file (default
+`<memory-dir>/swarm-relay.md`, configurable via `relayPath`). Subagents cannot message
+each other directly; the relay is the only channel between them. It carries findings,
+FINDINGS blocks from finished lanes, and `HANDOFF -> lane-ID: description` notes for
+work that crosses lane boundaries. The orchestrator reads it back at integration time,
+so work a lane discovered outside its scope gets routed instead of dropped.
+
+### Refine / reiterate loop
+
+After integrating, the orchestrator runs a bounded quality loop (default 1 pass,
+`refinePasses` 0-3):
+
+1. **Draft** — the integrated result.
+2. **Critique** — a fresh verifier lane attacks it (claims vs evidence, gaps, contradictions).
+3. **Fix** — a fix lane addresses valid critique points.
+4. **Re-verify** — the fixed result is re-checked.
+
+The loop **stops early the moment a critique finds zero issues** — convergence, not
+fixed iteration count. `refinePasses: 0` disables it (single pass, no critique).
+
+### Memory & auto-compaction
+
+All lanes and the orchestrator share one markdown memory file
+(`~/.config/opencode/swarm-memory.md` by default), seeded with a header, an attribution
+comment, and a hidden watermark on first run. After every 40th message (configurable)
+the orchestrator is instructed to distill the session into the memory file — recent
+lessons first, stale ones pruned — then continue, with a cooldown to prevent
+back-to-back compactions.
+
+## Commands
 
 | Command | What it does |
 | --- | --- |
-| `/swarm <task>` | Load the swarm skill and orchestrate the task across parallel lanes |
-| `/swarm-status` | Live dispatch budget + settings (mode, burst, rate, tokens, compaction, memory path) |
-| `/review [scope]` | Optional reviewer lane over your current changes |
-| `/swarm-mode` | Show the current mode |
-| `/swarm-mode adaptive\|manual` | Switch modes at runtime (persisted; extra words after the mode are ignored) |
+| `/swarm <task>` | Loads the `swarm` skill and dispatches the task to parallel subagent lanes in one message: adaptive shape guidance (with per-task lane rubric + word-count hint) or manual confirmation, lane doctrine, specialist role briefs, relay file coordination, and the refine loop before reporting done. |
+| `/swarm-mode` | Toggle between `adaptive` and `manual`. Persists in `swarm-state.json`. |
+| `/swarm-status` | One-shot status report: mode, dispatch budget (burst/rate/tokens), wave size, refine passes, relay path, auto-compaction settings, memory file. |
 
-Plus the `swarm` skill, which teaches any orchestrating agent the full protocol: plan → dispatch → integrate → optional review → memory.
+Slash commands work in the TUI (and via the `POST /api/session/{id}/command` HTTP
+endpoint). Note: `opencode run "/cmd"` does **not** resolve slash commands — that is an
+OpenCode CLI behavior, not a plugin bug.
 
-## Swarm modes
+## Options
 
-- **Adaptive (default)** — the orchestrator analyzes the task and decides lane count and hierarchy (flat vs lead/worker), justifies the shape in a line, and adapts based on what past runs recorded in memory.
-- **Manual** — *you* decide. The orchestrator takes the subagent count and hierarchy from your request, and asks before dispatching if you didn't state them.
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `mode` | `"adaptive" \| "manual"` | `"adaptive"` | Swarm shape policy. |
+| `ratePerSecond` | `number` | `4` | Sustained dispatches/sec. |
+| `burst` | `number` | `8` | Immediate dispatches before throttling. |
+| `rateLimit` | `boolean` | `true` | Master switch for rate limiting. |
+| `waveSize` | `number` | `8` | Lanes per dispatch message. |
+| `refinePasses` | `number` | `1` | Refine-loop passes after integration (0 disables, max 3). |
+| `relayPath` | `string` | `<memory-dir>/swarm-relay.md` | Append-only lane-to-lane relay file. |
+| `memoryPath` | `string` | `~/.config/opencode/swarm-memory.md` | Shared memory file. |
+| `compactThreshold` | `number` | `40` | Messages before a compaction prompt. |
+| `compactCooldownMs` | `number` | `30000` | Minimum ms between compactions. |
 
-Switch with `/swarm-mode manual` / `/swarm-mode adaptive`, or set the default in config:
+## Skill output (what the orchestrator receives)
 
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "file:///C:/path/to/opencode-swarm-lite",
-      "options": {
-        "mode": "manual",
-        "ratePerSecond": 4,
-        "burst": 8,
-        "compactThreshold": 40,
-        "compactCooldownMs": 30000
-      }
-    }
-  ]
-}
+```markdown
+# Swarm orchestration
+
+<!-- opencode-swarm-lite v1.3.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+
+## Mode: ADAPTIVE (default: adaptive)
+
+You choose the lane count and hierarchy that fit the task and justify the shape.
+Never say "I'll use the default N lanes." — there is no default count; there is only
+the work. Rubric: 1 lane for a single focused task; 2-3 for two or three workstreams;
+4-6 for four to six; 7+ only for genuinely parallel large efforts. Split by workstream,
+never by number. (This task hints ~N words -> about M independent lanes; a hint, not a
+mandate.)
+
+## Lane doctrine (follow always; these are working rules, not permissions)
+
+1. **Evidence over assertion.** ...
+...(seven rules; each lane brief repeats them)...
+
+## Lane-to-lane communication (relay file)
+
+Lanes coordinate through `<memory-dir>/swarm-relay.md` — an append-only relay, the only
+channel between lanes. Read first, write second; append findings/handoffs, never edit.
+
+## Workflow
+
+1. Decompose the task into INDEPENDENT lanes...
+2. Dispatch lanes in parallel — every lane brief gets the doctrine + a specialist role.
+3. Wait for lanes to finish...
+4. **Relay** — read the relay file top-to-bottom at integration time; route HANDOFFs.
+5. Integrate results...
+6. **Refine** — draft -> verifier critique -> fix -> re-verify; stop early on convergence.
+7. Write the final report.
+
+## Specialist roles (attach exactly one to every lane brief)
+
+### Architect lane / Builder lane / Verifier lane
+### Coder lane / Researcher lane / Reviewer lane / Multimodal analyst lane
+
+...(one-line role contract each; multimodal requires media paths)...
+
+## Dispatch mechanics
+
+Dispatch every lane in ONE message... ~8 lanes per message, token-bucket limited
+(burst 8)...
+
+## Memory & auto-compaction
+
+Shared memory file: `<memory-dir>/swarm-memory.md`. After every 40th message, distill...
+
+## Refine passes
+
+1 pass (draft -> critique -> fix -> re-verify; stop early on convergence).
 ```
 
-## Lane roles
+## Memory file (seeded on first run)
 
-The skill ships role briefs for four lane types — dispatch attaches the right brief to each subagent:
+```markdown
+# Swarm memory
 
-- **Coder** — implement, verify, report; no scope creep
-- **Researcher** — read-only investigation, evidence-based findings
-- **Reviewer** — optional, severity-ranked findings, no veto power
-- **Multimodal analyst** — reads images, PDFs, screenshots, diagrams; cross-checks media against code/docs
+<!-- opencode-swarm-lite v1.3.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
 
-## Rate limiting
+<hidden zero-width watermark>
 
-Subagent dispatches go through a token bucket (default **4 dispatches/sec, burst 8**). **Wave = burst**: put every lane of a wave in a *single* assistant message, up to the burst size, and dispatch lanes in the **background** by default so the wave doesn't block. When the budget is exhausted, the dispatch fails with a retry hint, so the orchestrator waves dispatches instead of flooding providers. Tune or disable via `ratePerSecond`, `burst`, `rateLimitEnabled: false`. Degenerate values (NaN, Infinity, negatives, zero) are sanitized to safe defaults at load, and a backwards system clock can never mint or corrupt the budget.
-
-## Auto-compaction
-
-When a session's message count crosses `compactThreshold` (default 40), the plugin triggers OpenCode's session compaction, with a `compactCooldownMs` (default 30 s) guard against loops. A failed compaction releases the in-flight guard immediately without burning the cooldown, so the next context build can retry. Lane briefs stay valid across compaction because the skill instructs self-contained briefs.
-
-## Memory
-
-A single markdown file (default `~/.config/opencode/swarm-memory.md`, override with `memoryPath`) where orchestrators append short lessons after each run and read them before planning. Keep it under ~150 lines; prune stale entries.
-
-## Watermark
-
-Generated payloads (skill content, memory header) carry an invisible Unicode-tag-character watermark decoding to `SWARMLITE/ARIHANT/2026`, plus visible attribution comments. Verify with:
-
-```ts
-import { decodeWatermark, WATERMARK } from "opencode-swarm-lite"
-// decodeWatermark(content) returns the decoded tag-run; compare against the
-// exported WATERMARK's decoded secret to detect provenance.
+Shared lessons across swarm runs. Append short bullets, prune stale entries, keep this
+under ~300 lines. Structure: `## Durable` (carry forward) and `## Recent` (prune).
 ```
 
-The package ships TypeScript source only (no build step), so it is consumed by
-OpenCode's own TS-capable plugin runtime. Plain-Node consumers cannot `require`
-or `import` it as-is.
+## Verification
 
-## Development
-
-```sh
-bun install
-bun run typecheck   # tsc --noEmit over src/ and test/
-bun run test        # runs every test/**/*.test.ts
+```bash
+bun run typecheck   # tsc --noEmit
+bun run test        # runs every test/**/*.test.ts file
 ```
 
-Tests are plain Bun scripts — each file is executed directly and exits non-zero
-on failure, so there is no test-runner dependency. `tsconfig.json` includes
-both `src` and `test`.
+107 checks across three suites, all hand-checked against the source:
 
-## Layout
+- `test/doctrine.test.ts` (65) — doctrine rule coverage, relay protocol invariants,
+  refine-loop rendering (0/1/2/3 passes), adaptive lane rubric + laneHint scaling
+  (tiny vs mid vs huge prompts hint different lane counts — the anti-hardcode proof),
+  specialist roster completeness, and skillContent rendering for both modes.
+- `test/rate-limit.test.ts` (28) — burst, recovery, rejection message.
+- `test/watermark.test.ts` (14) — decode, placement, attribution comment.
 
-| Path | Purpose |
-| --- | --- |
-| `index.ts` | Root plugin entrypoint — the file OpenCode resolves for a local directory install |
-| `src/index.ts` | Plugin implementation, `DispatchRateLimiter`, `decodeWatermark`, `WATERMARK` |
-| `test/rate-limit.test.ts` | Token-bucket behaviour (burst, refill, rejection messages) |
-| `test/watermark.test.ts` | Watermark encode/decode behaviour |
+Layout:
 
-## License
+```
+opencode-swarm-lite/
+  src/
+    index.ts            # plugin: doctrine, relay, refine loop, roles, lanes, rate limit, compaction
+  test/
+    doctrine.test.ts    # 65 checks: doctrine/relay/refine/rubric/roles/skillContent
+    rate-limit.test.ts  # 28 checks: burst/recovery/reject
+    watermark.test.ts   # 14 checks: secret watermark
+  package.json
+  README.md
+```
 
-MIT — Copyright (c) 2026 Arihant Bharanidhran \<arihantbharani@outlook.com\>.
+## Design notes
+
+- **Doctrine over permissions.** v1.3.0 adds working rules for lanes, not permission
+  rails: nothing is gated, blocked, or receipted. Doctrine reduces errors (contradictory
+  or redundant parallel work) while keeping the plugin thin.
+- **Adaptive means adaptive.** The lane count is derived from the task's workstreams via
+  an embedded rubric plus a per-prompt word-count hint, with an explicit instruction to
+  never claim a "default" count. Tests assert the hint scales with prompt size.
+- **Quality loops.** The refine loop is a bounded prompt contract (draft -> critique ->
+  fix -> re-verify, early stop on convergence), not a fixed iteration tax.
+- **Everything is prompt text or a small mechanism.** The doctrine, relay protocol,
+  role briefs, and refine loop are plain markdown in the skill/`task` payloads.
+  The only executable machinery remains the token-bucket rate limiter, state persistence,
+  and the compaction timer.
+
+## Limitations
+
+- Rate limiting is **in-process** — it throttles what this plugin dispatches, not what
+  the model emits elsewhere.
+- Compaction asks the orchestrator to distill; it cannot force a small model to
+  comply, and it does not truncate the conversation itself.
+- Lane doctrine and the refine loop are prompt contracts: a weak model can still ignore
+  them (same trust model as every prompt-based tool).
+- `opencode run "/swarm ..."` does not resolve slash commands (OpenCode CLI limitation);
+  use the TUI or the command API.
+- The relay file is append-only markdown shared by concurrent lanes; on very fast parallel
+  writers, last-append-wins is possible (same trust model as shared files generally).
+
+## Roadmap (v1.3.x)
+
+- [x] Adaptive lane rubric + anti-default guarantee + per-task lane hint
+- [x] Lane doctrine (7 working rules in every lane brief)
+- [x] Lane-to-lane relay communication (append-only shared file)
+- [x] Specialist role briefs (architect/builder/verifier added to coder/researcher/reviewer/multimodal)
+- [x] Refine/reiterate loop with early stop on convergence
+- [ ] Optional relay rotation per run (archive + fresh relay)
+- [ ] Worktree-aware lanes (parallel file isolation)
+
+## License / Attribution
+
+Copyright (c) 2026 **Arihant Bharanidhran** `<arihantbharani@outlook.com>`.
+All rights reserved. Every markdown payload emitted by this plugin (skill content,
+memory seed) carries an attribution comment; the memory seed additionally carries a
+hidden zero-width watermark that decodes to `SWARMLITE/ARIHANT/2026`.
