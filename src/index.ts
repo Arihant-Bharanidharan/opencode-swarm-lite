@@ -8,6 +8,8 @@
  *  - Adaptive or manual swarm modes (orchestrator decides vs user decides)
  *  - Lane doctrine (working rules that cut errors + keep lanes coherent)
  *  - Specialist roles: architect, builder, verifier, researcher, reviewer, multimodal
+ *  - Extensible role registry: the agent can add, modify, and broaden specialist
+ *    roles at runtime (persisted markdown registry, skill hot-refreshes)
  *  - Lane-to-lane communication via an append-only relay file
  *  - Refine/reiterate loop: draft -> verifier critique -> fix -> re-verify
  *  - Parallel subagent lanes incl. multimodal analysts, dispatched in waves
@@ -88,7 +90,7 @@ const brand = <T>(value: string): T => value as unknown as T
 
 const AUTHOR = "Arihant Bharanidhran"
 const EMAIL = "arihantbharani@outlook.com"
-const VERSION = "1.3.0"
+const VERSION = "1.4.0"
 
 /**
  * Secret watermark: encodes "SWARMLITE/ARIHANT/2026" as Unicode tag characters
@@ -128,7 +130,8 @@ const MEMORY_HEADER = `# Swarm memory
 Shared lessons across swarm runs. Append short bullets, prune stale entries, keep this file under ~150 lines.
 `
 
-const ROLE_BRIEFS = {
+/** Built-in specialist role briefs. Exported: the role registry resolves against them. */
+export const ROLE_BRIEFS: Record<string, string> = {
   architect: `You are an architect lane in a lightweight swarm.
 - Design the approach for your brief: decompose the problem, name the invariants that must hold, and specify the acceptance checks a builder/verifier can run.
 - Ground the design in the actual code you read (cite file:line). A design that ignores the existing code's conventions is wrong.
@@ -162,6 +165,198 @@ const ROLE_BRIEFS = {
 - Cross-check media against the code or docs in your brief (e.g. does the screenshot match the implemented UI, does the diagram match the architecture).
 - Report findings with concrete references: file paths, timestamps, coordinates/regions of interest in images.
 - Do not edit files. Combine visual/document evidence with textual evidence in one structured report.`,
+}
+
+/** Ordered built-in specialist roster (slug -> display title). */
+export const BUILTIN_ROLES: ReadonlyArray<{ slug: string; title: string }> = [
+  { slug: "architect", title: "Architect" },
+  { slug: "builder", title: "Builder" },
+  { slug: "verifier", title: "Verifier" },
+  { slug: "coder", title: "Coder" },
+  { slug: "researcher", title: "Researcher" },
+  { slug: "reviewer", title: "Reviewer" },
+  { slug: "multimodal", title: "Multimodal analyst" },
+]
+
+/** Registry slugs: lowercase letters, digits, hyphens (max 40 chars). */
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/
+
+const EXTEND_PREAMBLE = "**Broadened for this installation (added by the orchestrator):**"
+
+/** One block of the agent-writable role registry: `### role:` (add/modify) or `### extend:` (broaden). */
+export interface RoleBlock {
+  kind: "role" | "extend"
+  /** normalized lowercase slug */
+  name: string
+  /** optional base role (built-in or another registry role) for `role:` blocks */
+  extends?: string
+  /** the block's rules/purpose lines, newline-joined */
+  body: string
+}
+
+/**
+ * Parse the role registry markdown the orchestrator appends to.
+ *
+ * Format (per block):
+ *   ### role: security-auditor     <- ADD a role; on a built-in slug it REPLACES that brief (modify)
+ *   - extends: verifier            <- optional base (built-in or another registry role)
+ *   - One-line purpose.
+ *   - 2-5 terse, imperative rules.
+ *   ### extend: builder            <- BROADEN a role by appending guidance
+ *   - Extra judgment every builder lane should apply.
+ *
+ * Rules: any other heading ends the current block; blocks with an empty body are
+ * dropped (a bare header changes nothing); duplicate `role:` slugs are kept in
+ * file order (resolution is last-wins, so re-appending rewrites a role).
+ */
+export function parseRoles(text: string): RoleBlock[] {
+  const blocks: RoleBlock[] = []
+  let cur: RoleBlock | null = null
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line.startsWith("###")) {
+      const m = /^###\s+(role|extend):\s*(\S+)\s*$/i.exec(line)
+      const slug = m ? m[2].toLowerCase() : ""
+      if (m && SLUG_RE.test(slug)) {
+        cur = { kind: m[1].toLowerCase() as RoleBlock["kind"], name: slug, body: "" }
+        blocks.push(cur)
+      } else {
+        cur = null // any other heading (or malformed role heading) ends the block
+      }
+      continue
+    }
+    if (!cur) continue
+    const ext = /^-\s*extends:\s*`?([A-Za-z0-9][A-Za-z0-9-]*)`?\s*$/i.exec(line)
+    if (ext && cur.kind === "role" && !cur.extends) {
+      cur.extends = ext[1].toLowerCase()
+      continue
+    }
+    if (line) cur.body = cur.body ? `${cur.body}\n${line}` : line
+  }
+  return blocks.filter((b) => b.body.length > 0)
+}
+
+/** Last `role:` definition for a slug in file order (re-appending the same slug rewrites it). */
+function lastRoleDef(slug: string, blocks: RoleBlock[]): RoleBlock | undefined {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b.kind === "role" && b.name === slug) return b
+  }
+  return undefined
+}
+
+/**
+ * Resolve a slug's full brief: registry `role:` def (modify/replace) or built-in base,
+ * climbed through its `extends:` chain, then every `extend:` block folded on top
+ * (broadening a base applies wherever that base is used). `seen` breaks extends cycles.
+ */
+function resolveRaw(slug: string, blocks: RoleBlock[], seen: Set<string>): string | null {
+  if (seen.has(slug)) return null // extends-cycle guard: stop climbing, never hang
+  seen.add(slug)
+  const def = lastRoleDef(slug, blocks)
+  let base: string | null
+  if (def) {
+    base = def.body
+    if (def.extends) {
+      const parent = resolveRaw(def.extends, blocks, seen)
+      base = parent ? `${parent}\n${def.body}` : def.body // unknown base: stand on the role's own body
+    }
+  } else {
+    base = ROLE_BRIEFS[slug] ?? null
+  }
+  if (base === null) return null
+  const exts = blocks.filter((b) => b.kind === "extend" && b.name === slug)
+  if (exts.length > 0) base = `${base}\n${EXTEND_PREAMBLE}\n${exts.map((e) => e.body).join("\n")}`
+  return base
+}
+
+/** Fully resolved brief for a slug (built-in or registry role), or null when unknown. */
+export function resolveRoleBrief(slug: string, blocks: RoleBlock[]): string | null {
+  return resolveRaw(slug.trim().toLowerCase(), blocks, new Set())
+}
+
+/** Registry-defined custom slugs (not built-in), in file order, de-duplicated (last def wins). */
+function customSlugs(blocks: RoleBlock[]): string[] {
+  const out: string[] = []
+  for (const b of blocks) {
+    if (b.kind !== "role" || b.name in ROLE_BRIEFS) continue
+    if (!out.includes(b.name)) out.push(b.name)
+  }
+  return out
+}
+
+/** Slug -> heading title, sentence case to match the built-in headings (`security-auditor` -> `Security auditor`). */
+function titleize(slug: string): string {
+  // slugs are lowercase-only by SLUG_RE, so only the first letter needs raising
+  return slug.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase())
+}
+
+/** One-line-per-role listing for /swarm-roles (built-ins + registry, with modify/broaden markers). */
+export function registrySummary(blocks: RoleBlock[]): string {
+  const slugs = [...BUILTIN_ROLES.map((r) => r.slug), ...customSlugs(blocks)]
+  return slugs
+    .map((slug) => {
+      if (resolveRoleBrief(slug, blocks) === null) return null
+      const marks = [slug in ROLE_BRIEFS ? "built-in" : "custom"]
+      const def = lastRoleDef(slug, blocks)
+      if (def && slug in ROLE_BRIEFS) marks.push("modified")
+      else if (def?.extends) marks.push(`extends ${def.extends}`)
+      const extCount = blocks.filter((b) => b.kind === "extend" && b.name === slug).length
+      if (extCount > 0) marks.push(`broadened x${extCount}`)
+      return `- ${slug} (${marks.join(", ")})`
+    })
+    .filter((line): line is string => line !== null)
+    .join("\n")
+}
+
+/**
+ * The Specialist roles section of the skill: the built-in roster (with any registry
+ * modifications/broadenings folded in), custom registry roles, and the registry
+ * contract that lets the orchestrator add/modify/broaden roles itself.
+ */
+export function rolesSection(blocks: RoleBlock[], rolesPath: string): string {
+  const builtin = BUILTIN_ROLES.map(({ slug, title }) => {
+    const modified = lastRoleDef(slug, blocks) !== undefined
+    const brief = resolveRoleBrief(slug, blocks) ?? ROLE_BRIEFS[slug]
+    return `### ${title} lane${modified ? " (modified)" : ""}\n${brief}`
+  }).join("\n\n")
+  const customs = customSlugs(blocks)
+    .flatMap((slug) => {
+      const brief = resolveRoleBrief(slug, blocks)
+      return brief ? [`### ${titleize(slug)} lane (custom)\n${brief}`] : []
+    })
+    .join("\n\n")
+  const customSection = customs ? `\n\n${customs}` : ""
+  return `## Specialist roles
+
+Assign ONE specialist role per lane (mix and match as the workstreams demand):
+
+${builtin}${customSection}
+
+### Role registry - add, modify, or broaden roles yourself
+
+The registry is yours to shape: when no built-in fits a workstream, define a project-specific role; when a built-in needs this project's judgment, broaden (or modify) it. Registry file: \`${rolesPath}\` - append-only markdown, same discipline as the relay.
+
+Block format:
+
+\`\`\`
+### role: security-auditor
+- extends: verifier
+- One-line purpose for this specialist.
+- 2-5 terse, imperative rules.
+
+### extend: builder
+- Extra judgment every builder lane in this project should apply.
+\`\`\`
+
+Rules:
+- Slugs: lowercase letters, digits, hyphens. ONE role per lane still applies.
+- \`role:\` on a new slug ADDS a role; \`role:\` on an existing slug (built-in or custom) REPLACES that brief - that is how you modify a role. Re-appending the same custom slug rewrites it (last block wins).
+- \`extend:\` APPENDS guidance to an existing role - that is how you broaden one. Multiple \`extend:\` blocks accumulate in file order, and broadening a base applies everywhere that base is used (including roles that \`extends:\` it).
+- \`- extends: <slug>\` makes a custom role inherit a base (built-in or another custom; a cycle resolves to the role's own body instead of hanging).
+- Custom roles are specialization only: every lane still gets the Lane doctrine verbatim (evidence over assertion, scope fence, STATUS/FINDINGS/HANDOFFS finish). A registry block never replaces the doctrine, the relay protocol, or the refine loop.
+- Effects are immediate if you read the file mid-run; the skill re-renders automatically when the file changes, so later runs see it too.
+- Add a role only when a real workstream needs it (recurring project-specific specialists), keep each block paste-able (<=8 lines), and prune stale blocks - keep the file under ~150 lines.`
 }
 
 /**
@@ -234,6 +429,8 @@ export function skillContent(
   rateLimitOn: boolean,
   refinePasses: number,
   relayPath: string,
+  roleBlocks: RoleBlock[] = [],
+  rolesPath: string = path.join(path.dirname(memoryPath), "swarm-roles.md"),
 ): string {
   const modeSection =
     mode === "manual"
@@ -260,9 +457,9 @@ ${modeSection}
 
 ## Workflow
 
-1. **Memory** - read \`${memoryPath}\` if it exists. Apply relevant lessons.
+1. **Memory + registry** - read \`${memoryPath}\` if it exists (apply relevant lessons) and \`${rolesPath}\` if it exists (project-specific or extended specialist roles - see the Role registry under Specialist roles).
 2. **Plan** - split the task into independent lanes, one lane per independent workstream. Each lane becomes one subagent with a self-contained brief: goal, relevant files/context, verification method, expected report, and the lane doctrine (below).
-3. **Dispatch** - launch lanes in parallel with the \`subagent\` tool in ONE message per wave, background by default. Attach the matching specialist brief + doctrine to each lane's prompt. Prefer dedicated agents if available (\`swarm-coder\`, \`swarm-researcher\`, \`swarm-reviewer\`); otherwise the builtin \`general\` subagent with the specialist brief. Don't give two lanes the same files.
+3. **Dispatch** - launch lanes in parallel with the \`subagent\` tool in ONE message per wave, background by default. Attach the matching specialist brief (a built-in roster entry or a registry role from \`${rolesPath}\`) + doctrine to each lane's prompt. Prefer dedicated agents if available (\`swarm-coder\`, \`swarm-researcher\`, \`swarm-reviewer\`); otherwise the builtin \`general\` subagent with the specialist brief. Don't give two lanes the same files.
 4. **Relay** - lanes coordinate via \`${relayPath}\`; you (orchestrator) also read it between waves to re-route handoffs.
 5. **Integrate** - combine results, resolve conflicts yourself, run tests/linters.
 6. **Refine** - run the refine loop below until critique converges. This is where quality comes from.
@@ -279,30 +476,7 @@ ${DOCTRINE}
 
 ${relaySection(relayPath)}
 
-## Specialist roles
-
-Assign ONE specialist role per lane (mix and match as the workstreams demand):
-
-### Architect lane
-${ROLE_BRIEFS.architect}
-
-### Builder lane
-${ROLE_BRIEFS.builder}
-
-### Verifier lane
-${ROLE_BRIEFS.verifier}
-
-### Coder lane
-${ROLE_BRIEFS.coder}
-
-### Researcher lane
-${ROLE_BRIEFS.researcher}
-
-### Reviewer lane
-${ROLE_BRIEFS.reviewer}
-
-### Multimodal analyst lane
-${ROLE_BRIEFS.multimodal}
+${rolesSection(roleBlocks, rolesPath)}
 
 ${refineSection(refinePasses)}
 
@@ -357,6 +531,20 @@ export default Plugin.define({
       typeof ctx.options.relayPath === "string" && ctx.options.relayPath.length > 0
         ? (ctx.options.relayPath as string)
         : path.join(path.dirname(memoryPath), "swarm-relay.md")
+    /** Role registry file (agent-writable: add / modify / broaden specialist roles). */
+    const rolesPath =
+      typeof ctx.options.rolesPath === "string" && ctx.options.rolesPath.length > 0
+        ? (ctx.options.rolesPath as string)
+        : path.join(path.dirname(memoryPath), "swarm-roles.md")
+
+    /** Read + parse the role registry (missing/unreadable file = registry-only built-ins). */
+    const loadRoles = (): RoleBlock[] => {
+      try {
+        return parseRoles(fs.readFileSync(rolesPath, "utf8"))
+      } catch {
+        return []
+      }
+    }
 
     // ---- seed memory file on first load; never touch an existing one ----
     try {
@@ -373,6 +561,64 @@ export default Plugin.define({
       return defaultMode
     }
 
+    // ---- role registry state (hot: reloaded whenever swarm-roles.md changes on disk) ----
+    let customRoles = loadRoles()
+    const statRoles = (): string => {
+      try {
+        const s = fs.statSync(rolesPath)
+        return `${s.mtimeMs}:${s.size}`
+      } catch {
+        return "absent"
+      }
+    }
+    let rolesStamp = statRoles()
+
+    // ---- swarm skill ----
+    const initialMode = await currentMode()
+    const skillPath = path.join(path.dirname(memoryPath), "swarm", "SKILL.md")
+    const skillDescription =
+      "Lightweight multi-agent orchestration - adaptive or manual swarm shape, lane doctrine, extensible specialist roles (add/modify/broaden via the role registry), lane-to-lane relay comms, refine/reiterate loops, one-message parallel dispatch in waves, multimodal lanes, dispatch rate limiting, auto-compaction, shared memory. Use when the user says 'swarm' or asks to parallelize work across agents."
+    const renderSkill = (mode: SwarmMode): string =>
+      skillContent(mode, memoryPath, waveSize, rateLimitOn, refinePasses, relayPath, customRoles, rolesPath)
+    await ctx.skill.transform((editor) => {
+      editor.add({
+        id: brand<Skill.ID>("swarm"),
+        name: brand<Skill.Name>("Swarm"),
+        description: skillDescription,
+        path: brand(skillPath),
+        content: renderSkill(initialMode),
+      })
+    })
+
+    // re-render the skill whenever the stored mode or the role registry changes;
+    // add-if-missing so a missing skill is re-registered instead of silently skipped
+    const refreshSkill = async () => {
+      const content = renderSkill(await currentMode())
+      await ctx.skill.transform((editor) => {
+        const existing = editor.get("swarm")
+        if (existing) editor.update("swarm", (s) => (s.content = content))
+        else
+          editor.add({
+            id: brand<Skill.ID>("swarm"),
+            name: brand<Skill.Name>("Swarm"),
+            description: skillDescription,
+            path: brand(skillPath),
+            content,
+          })
+      })
+    }
+
+    // reload the registry + re-render the skill when the roles file changed on disk
+    // (stamp only advances after a successful re-render, so a missed refresh retries)
+    const maybeRefreshRoles = async (): Promise<boolean> => {
+      const now = statRoles()
+      if (now === rolesStamp) return false
+      customRoles = loadRoles()
+      await refreshSkill()
+      rolesStamp = now
+      return true
+    }
+
     // ---- rate-limit subagent dispatches (token bucket) ----
     if (rateCfg.enabled) {
       await ctx.tool.hook("execute.before", (event) => {
@@ -381,8 +627,19 @@ export default Plugin.define({
       })
     }
 
+    // ---- role registry hot-refresh: pick up registry edits made through write/edit/patch ----
+    await ctx.tool.hook("execute.after", (event) => {
+      if (event.tool === "write" || event.tool === "edit" || event.tool === "patch") void maybeRefreshRoles()
+    })
+
     // ---- auto-compaction: trigger when a session grows past the threshold ----
     await ctx.session.hook("context", (event) => {
+      void maybeRefreshRoles() // also catches registry edits made outside write tools (e.g. shell append)
+      // prune stale cooldown entries so the map cannot grow across sessions
+      if (lastCompaction.size > 256) {
+        const cutoff = Date.now() - Math.max(compactCooldownMs, 60_000)
+        for (const [sid, at] of lastCompaction) if (at < cutoff) lastCompaction.delete(sid)
+      }
       const id = event.sessionID
       if (compacting.has(id)) return
       if (event.messages.length < compactThreshold) return
@@ -397,33 +654,6 @@ export default Plugin.define({
         .catch(() => {})
         .finally(() => compacting.delete(id))
     })
-
-    // ---- swarm skill ----
-    const initialMode = await currentMode()
-    const skillPath = path.join(path.dirname(memoryPath), "swarm", "SKILL.md")
-    await ctx.skill.transform((editor) => {
-      editor.add({
-        id: brand<Skill.ID>("swarm"),
-        name: brand<Skill.Name>("Swarm"),
-        description:
-          "Lightweight multi-agent orchestration - adaptive or manual swarm shape, lane doctrine, specialist roles, lane-to-lane relay comms, refine/reiterate loops, one-message parallel dispatch in waves, multimodal lanes, dispatch rate limiting, auto-compaction, shared memory. Use when the user says 'swarm' or asks to parallelize work across agents.",
-        path: brand(skillPath),
-        content: skillContent(initialMode, memoryPath, waveSize, rateLimitOn, refinePasses, relayPath),
-      })
-    })
-
-    // re-render skill content whenever the stored mode changes
-    const refreshSkill = async () => {
-      const mode = await currentMode()
-      await ctx.skill.transform((editor) => {
-        const existing = editor.get("swarm")
-        if (existing)
-          editor.update(
-            "swarm",
-            (s) => (s.content = skillContent(mode, memoryPath, waveSize, rateLimitOn, refinePasses, relayPath)),
-          )
-      })
-    }
 
     // ---- commands ----
     await ctx.command.transform((editor) => {
@@ -440,7 +670,7 @@ export default Plugin.define({
             ...prompt,
             sessionID,
             delivery,
-            text: `Load the \`swarm\` skill and orchestrate this task: ${prompt.text}\n\n${shapeGuidance} Split into independent lanes and dispatch them in parallel - every lane in ONE message, in waves of ~${waveSize}. Attach the Lane doctrine and one specialist role brief to EVERY lane brief. Lanes coordinate through the relay file (${relayPath}) - read it before starting, append findings/handoffs as you go. Integrate, then run the refine loop (${refinePasses} pass${refinePasses === 1 ? "" : "es"}: draft -> verifier critique -> fix -> re-verify; stop early on convergence) before reporting done. No review step unless I asked for one.`,
+            text: `Load the \`swarm\` skill and orchestrate this task: ${prompt.text}\n\n${shapeGuidance} Split into independent lanes and dispatch them in parallel - every lane in ONE message, in waves of ~${waveSize}. Attach the Lane doctrine and one specialist role brief to EVERY lane brief - a built-in roster entry, or a role from the registry at ${rolesPath} if a workstream fits it better (add/modify/broaden roles there per the Role registry section when no built-in fits). Lanes coordinate through the relay file (${relayPath}) - read it before starting, append findings/handoffs as you go. Integrate, then run the refine loop (${refinePasses} pass${refinePasses === 1 ? "" : "es"}: draft -> verifier critique -> fix -> re-verify; stop early on convergence) before reporting done. No review step unless I asked for one.`,
           })
         },
       })
@@ -462,14 +692,40 @@ export default Plugin.define({
         name: "swarm-status",
         description: "Show swarm mode, dispatch budget, and compaction settings",
         execute: async ({ sessionID, prompt, delivery }) => {
+          await maybeRefreshRoles() // listing reflects the file on disk, even shell-edited
           const mode = await currentMode()
           const s = limiter.status()
           await ctx.session.prompt({
             ...prompt,
             sessionID,
             delivery,
-            text: `Swarm status - reply with exactly these lines:\n- Mode: ${mode.toUpperCase()} (default ${defaultMode.toUpperCase()})\n- Dispatch budget: burst ${s.burst} at ${s.ratePerSecond}/s, rate limiting ${s.enabled ? "ON" : "OFF"}, ~${s.tokens.toFixed(1)} of ${s.burst} tokens available now\n- Dispatch wave size: ~${waveSize} lanes per message\n- Refine loop: ${refinePasses} pass${refinePasses === 1 ? "" : "es"}${refinePasses === 0 ? " (disabled)" : " (draft -> critique -> fix -> re-verify)"}\n- Relay file: ${relayPath}\n- Auto-compaction: every ${compactThreshold} messages, ${compactCooldownMs / 1000}s cooldown\n- Memory file: ${memoryPath}`,
+            text: `Swarm status - reply with exactly these lines:\n- Mode: ${mode.toUpperCase()} (default ${defaultMode.toUpperCase()})\n- Dispatch budget: burst ${s.burst} at ${s.ratePerSecond}/s, rate limiting ${s.enabled ? "ON" : "OFF"}, ~${s.tokens.toFixed(1)} of ${s.burst} tokens available now\n- Dispatch wave size: ~${waveSize} lanes per message\n- Refine loop: ${refinePasses} pass${refinePasses === 1 ? "" : "es"}${refinePasses === 0 ? " (disabled)" : " (draft -> critique -> fix -> re-verify)"}\n- Roles: ${BUILTIN_ROLES.length} built-in + ${customRoles.length} registry block(s)\n- Role registry: ${rolesPath}\n- Relay file: ${relayPath}\n- Auto-compaction: every ${compactThreshold} messages, ${compactCooldownMs / 1000}s cooldown\n- Memory file: ${memoryPath}`,
           })
+        },
+      })
+
+      editor.add({
+        name: "swarm-roles",
+        description: "List specialist roles, or add/modify/broaden them in the role registry",
+        execute: async ({ sessionID, prompt, delivery }) => {
+          await maybeRefreshRoles() // listing reflects the file on disk, even shell-edited
+          const request = prompt.text.trim()
+          const listing = registrySummary(customRoles)
+          if (request) {
+            await ctx.session.prompt({
+              ...prompt,
+              sessionID,
+              delivery,
+              text: `Load the \`swarm\` skill (Role registry section) and update the specialist role registry at ${rolesPath} for this request: ${request}\n\nFollow the block format exactly: \`### role: <slug>\` to add a role or modify an existing one (on a built-in slug it replaces that brief), \`### extend: <slug>\` to broaden a role, optional \`- extends: <base>\` on role blocks. Keep every block to <=8 lines, do not dispatch any lane, and do not touch any file besides ${rolesPath}. After writing, reply with the updated listing below plus one line naming what you changed:\n${listing}`,
+            })
+          } else {
+            await ctx.session.prompt({
+              ...prompt,
+              sessionID,
+              delivery,
+              text: `Current specialist-role registry (${BUILTIN_ROLES.length} built-in, ${customRoles.length} registry block(s)). Reply with exactly these lines and nothing else:\n${listing}\n- registry file: ${rolesPath} (use /swarm-roles <request> to add, modify, or broaden roles)`,
+            })
+          }
         },
       })
 

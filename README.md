@@ -1,8 +1,8 @@
 # opencode-swarm-lite
 
-<!-- opencode-swarm-lite v1.3.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+<!-- opencode-swarm-lite v1.4.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
 
-Lightweight multi-agent orchestration for [OpenCode](https://opencode.ai). Parallel subagent lanes with **adaptive or manual swarm shapes**, a **lane doctrine** (working rules, not permission rails), **lane-to-lane relay communication**, **specialist role briefs**, **refine/reiterate quality loops**, **multimodal analyst workers**, **dispatch rate limiting**, **auto-compaction**, and a shared markdown memory. No gates, no receipts, no enforced reviews.
+Lightweight multi-agent orchestration for [OpenCode](https://opencode.ai). Parallel subagent lanes with **adaptive or manual swarm shapes**, a **lane doctrine** (working rules, not permission rails), **lane-to-lane relay communication**, **specialist role briefs** backed by an **extensible role registry** (add, modify, or broaden roles at runtime), **refine/reiterate quality loops**, **multimodal analyst workers**, **dispatch rate limiting**, **auto-compaction**, and a shared markdown memory. No gates, no receipts, no enforced reviews.
 
 Built as a deliberately thin alternative to heavyweight swarm plugins: everything is a plain prompt contract or a small, inspectable mechanism.
 
@@ -50,7 +50,8 @@ built from a template that now includes, in order:
    fail-loudly-early, a deterministic finish (`STATUS | FINDINGS | HANDOFFS`), and
    no self-promotion.
 2. A **specialist role brief** — architect, builder, verifier, coder, researcher,
-   reviewer, or multimodal analyst (see below).
+   reviewer, or multimodal analyst — or any custom/broadened role from the registry
+   (see below).
 3. The task-specific instructions from the orchestrator.
 4. The **relay protocol** — how to read and append to the shared relay file.
 
@@ -82,6 +83,30 @@ FINDINGS blocks from finished lanes, and `HANDOFF -> lane-ID: description` notes
 work that crosses lane boundaries. The orchestrator reads it back at integration time,
 so work a lane discovered outside its scope gets routed instead of dropped.
 
+### Extensible role registry (add / modify / broaden)
+
+The seven built-in roles are a starting point, not a ceiling. The agent reshapes the
+roster at runtime through an **append-only role registry** file
+(`<memory-dir>/swarm-roles.md` by default, configurable via `rolesPath`):
+
+- `### role: <slug>` **adds** a role; on an existing slug (built-in or custom) it
+  **replaces** that brief — that is how you *modify* a role. Last block wins.
+- `### extend: <slug>` **broadens** an existing role by appending guidance. Multiple
+  `extend:` blocks accumulate in file order, and broadening a base propagates to every
+  role that `extends:` it.
+- `- extends: <base>` on a role block makes a custom role inherit a base (built-in or
+  another custom); cycles resolve to the role's own body instead of hanging.
+
+Registry blocks are short (<=8 lines) and end at the next heading. The file is
+re-read automatically whenever it changes — through `write`/`edit`/`patch`, a shell
+append (checked on the next context build), or `/swarm-roles` — and the swarm skill
+re-renders in place: no restart, no service reload. A registry block is additive: it
+never replaces the lane doctrine, the relay protocol, or the refine loop, and ONE
+role per lane still applies. Browse the roster with `/swarm-roles`; reshape it with
+`/swarm-roles <request>` (the agent edits the file for you) or by editing the file
+directly — custom roles render as `### <Title> lane (custom)`, modified built-ins get
+`(modified)`.
+
 ### Refine / reiterate loop
 
 After integrating, the orchestrator runs a bounded quality loop (default 1 pass,
@@ -108,9 +133,10 @@ back-to-back compactions.
 
 | Command | What it does |
 | --- | --- |
-| `/swarm <task>` | Loads the `swarm` skill and dispatches the task to parallel subagent lanes in one message: adaptive shape guidance (with per-task lane rubric + word-count hint) or manual confirmation, lane doctrine, specialist role briefs, relay file coordination, and the refine loop before reporting done. |
+| `/swarm <task>` | Loads the `swarm` skill and dispatches the task to parallel subagent lanes in one message: adaptive shape guidance (with per-task lane rubric + word-count hint) or manual confirmation, lane doctrine, specialist role briefs (built-in roster or registry-defined), relay file coordination, and the refine loop before reporting done. |
 | `/swarm-mode` | Toggle between `adaptive` and `manual`. Persists in `swarm-state.json`. |
-| `/swarm-status` | One-shot status report: mode, dispatch budget (burst/rate/tokens), wave size, refine passes, relay path, auto-compaction settings, memory file. |
+| `/swarm-status` | One-shot status report: mode, dispatch budget (burst/rate/tokens), wave size, refine passes, role roster (built-in + registry), registry/relay paths, auto-compaction settings, memory file. |
+| `/swarm-roles [request]` | No text: prints the exact role listing (built-ins + registry roles with modified/broadened markers). With text: has the agent add, modify, or broaden roles in the registry for your request — no lanes dispatched. |
 
 Slash commands work in the TUI (and via the `POST /api/session/{id}/command` HTTP
 endpoint). Note: `opencode run "/cmd"` does **not** resolve slash commands — that is an
@@ -127,6 +153,7 @@ OpenCode CLI behavior, not a plugin bug.
 | `waveSize` | `number` | `8` | Lanes per dispatch message. |
 | `refinePasses` | `number` | `1` | Refine-loop passes after integration (0 disables, max 3). |
 | `relayPath` | `string` | `<memory-dir>/swarm-relay.md` | Append-only lane-to-lane relay file. |
+| `rolesPath` | `string` | `<memory-dir>/swarm-roles.md` | Role registry file: `### role:` adds/modifies, `### extend:` broadens; hot-reloaded into the skill. |
 | `memoryPath` | `string` | `~/.config/opencode/swarm-memory.md` | Shared memory file. |
 | `compactThreshold` | `number` | `40` | Messages before a compaction prompt. |
 | `compactCooldownMs` | `number` | `30000` | Minimum ms between compactions. |
@@ -136,7 +163,7 @@ OpenCode CLI behavior, not a plugin bug.
 ```markdown
 # Swarm orchestration
 
-<!-- opencode-swarm-lite v1.3.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+<!-- opencode-swarm-lite v1.4.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
 
 ## Mode: ADAPTIVE (default: adaptive)
 
@@ -159,20 +186,31 @@ channel between lanes. Read first, write second; append findings/handoffs, never
 
 ## Workflow
 
-1. Decompose the task into INDEPENDENT lanes...
-2. Dispatch lanes in parallel — every lane brief gets the doctrine + a specialist role.
-3. Wait for lanes to finish...
+1. **Memory + registry** — read the memory file and `swarm-roles.md` (registry roles).
+2. Decompose the task into INDEPENDENT lanes...
+3. Dispatch lanes in parallel — every lane brief gets the doctrine + a built-in or
+   registry role.
 4. **Relay** — read the relay file top-to-bottom at integration time; route HANDOFFs.
 5. Integrate results...
 6. **Refine** — draft -> verifier critique -> fix -> re-verify; stop early on convergence.
-7. Write the final report.
+7. Review (only when asked or high-risk)...
+8. Append short lessons to memory...
 
 ## Specialist roles (attach exactly one to every lane brief)
 
 ### Architect lane / Builder lane / Verifier lane
 ### Coder lane / Researcher lane / Reviewer lane / Multimodal analyst lane
+### <Custom> lane (custom) / <Built-in> lane (modified)   <- registry outcomes
 
 ...(one-line role contract each; multimodal requires media paths)...
+
+### Role registry - add, modify, or broaden roles yourself
+
+Registry file: `<memory-dir>/swarm-roles.md` (append-only markdown, same discipline as
+the relay). `### role: <slug>` adds or replaces (modify); `### extend: <slug>` appends
+(broaden); optional `- extends: <base>` inherits a base. Last block wins; accumulation
+is file order; ONE role per lane and the lane doctrine always apply. The skill
+re-renders automatically when the registry changes.
 
 ## Dispatch mechanics
 
@@ -193,7 +231,7 @@ Shared memory file: `<memory-dir>/swarm-memory.md`. After every 40th message, di
 ```markdown
 # Swarm memory
 
-<!-- opencode-swarm-lite v1.3.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+<!-- opencode-swarm-lite v1.4.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
 
 <hidden zero-width watermark>
 
@@ -208,13 +246,16 @@ bun run typecheck   # tsc --noEmit
 bun run test        # runs every test/**/*.test.ts file
 ```
 
-107 checks across three suites, all hand-checked against the source:
+176 checks across four suites, all hand-checked against the source:
 
 - `test/doctrine.test.ts` (65) — doctrine rule coverage, relay protocol invariants,
   refine-loop rendering (0/1/2/3 passes), adaptive lane rubric + laneHint scaling
   (tiny vs mid vs huge prompts hint different lane counts — the anti-hardcode proof),
   specialist roster completeness, and skillContent rendering for both modes.
 - `test/rate-limit.test.ts` (28) — burst, recovery, rejection message.
+- `test/roles.test.ts` (69) — registry parse rules, resolution (add/modify/broaden,
+  extends chains, cycle safety, last-block-wins), section rendering, the
+  `/swarm-roles` listing, skill integration, and 6-arg backward compatibility.
 - `test/watermark.test.ts` (14) — decode, placement, attribution comment.
 
 Layout:
@@ -222,10 +263,11 @@ Layout:
 ```
 opencode-swarm-lite/
   src/
-    index.ts            # plugin: doctrine, relay, refine loop, roles, lanes, rate limit, compaction
+    index.ts            # plugin: doctrine, relay, refine loop, role registry, lanes, rate limit, compaction
   test/
     doctrine.test.ts    # 65 checks: doctrine/relay/refine/rubric/roles/skillContent
     rate-limit.test.ts  # 28 checks: burst/recovery/reject
+    roles.test.ts       # 69 checks: registry parse/resolve/render/listing/back-compat
     watermark.test.ts   # 14 checks: secret watermark
   package.json
   README.md
@@ -244,7 +286,12 @@ opencode-swarm-lite/
 - **Everything is prompt text or a small mechanism.** The doctrine, relay protocol,
   role briefs, and refine loop are plain markdown in the skill/`task` payloads.
   The only executable machinery remains the token-bucket rate limiter, state persistence,
-  and the compaction timer.
+  and the compaction timer. v1.4.0's role registry stays inside this rule: the registry
+  is markdown and the refresh is a stat check + skill re-render.
+- **Extensible roster, fixed doctrine.** The agent can add, modify, and broaden
+  specialist roles at runtime (append-only registry file, hot-reloaded into the skill),
+  while the lane doctrine, relay protocol, refine loop, and one-role-per-lane rule stay
+  fixed contracts. Specialization is open; the safety properties are not editable.
 
 ## Limitations
 
@@ -258,16 +305,22 @@ opencode-swarm-lite/
   use the TUI or the command API.
 - The relay file is append-only markdown shared by concurrent lanes; on very fast parallel
   writers, last-append-wins is possible (same trust model as shared files generally).
+- The role registry is agent-writable by design: a bad edit can degrade a custom role
+  brief (the file is plain markdown, so it is easy to inspect and fix; built-in briefs
+  are only affected by an explicit `role:` block on their slug).
 
-## Roadmap (v1.3.x)
+## Roadmap (v1.4.x)
 
 - [x] Adaptive lane rubric + anti-default guarantee + per-task lane hint
 - [x] Lane doctrine (7 working rules in every lane brief)
 - [x] Lane-to-lane relay communication (append-only shared file)
 - [x] Specialist role briefs (architect/builder/verifier added to coder/researcher/reviewer/multimodal)
 - [x] Refine/reiterate loop with early stop on convergence
+- [x] Extensible role registry - add / modify / broaden roles at runtime
+      (`/swarm-roles`, `extends:` chains, cycle-safe resolution, hot-reloaded skill)
 - [ ] Optional relay rotation per run (archive + fresh relay)
 - [ ] Worktree-aware lanes (parallel file isolation)
+- [ ] Registry diff/undo (`/swarm-roles` snapshots before each update)
 
 ## License / Attribution
 
