@@ -24,6 +24,7 @@ import type {
   QualityLevel,
   RecoveryAssertions,
   RunActuals,
+  BranchRoiInput,
   SchedulerDashboard,
   SlaMode,
   TaskInput,
@@ -39,6 +40,10 @@ import type { RunHistory } from "./history.js"
 import { Telemetry } from "./telemetry.js"
 import type { RuntimeEvent } from "./telemetry.js"
 import type { AdaptiveScheduler } from "./scheduler.js"
+import { RunCoordinator } from "./coordinator.js"
+import type { RunManifestStore } from "./run-manifest.js"
+import { MixedStrategyScheduler } from "./mixed-strategy.js"
+import { PortfolioRouter } from "./portfolio-router.js"
 import { chooseVerification } from "./verify.js"
 import { clusterFindings } from "./cluster.js"
 import { scheduleDag } from "./schedule.js"
@@ -61,6 +66,10 @@ export interface SwarmToolDeps {
   telemetry: Telemetry
   scheduler: AdaptiveScheduler
   history: RunHistory
+  manifest: RunManifestStore
+  coordinator: RunCoordinator
+  mixedStrategy: MixedStrategyScheduler
+  portfolioRouter: PortfolioRouter
 }
 
 export interface ToolResult {
@@ -260,7 +269,20 @@ function taskInput(raw: any): TaskInput {
 }
 
 export function createSwarmTools(deps: SwarmToolDeps): SwarmTool[] {
-  const { stats, router, health, lanes, capsules, telemetry, scheduler, history } = deps
+  const {
+    stats,
+    router,
+    health,
+    lanes,
+    capsules,
+    telemetry,
+    scheduler,
+    history,
+    manifest,
+    coordinator,
+    mixedStrategy,
+    portfolioRouter,
+  } = deps
 
   const planTool: SwarmTool = {
     name: "swarm_plan",
@@ -1255,6 +1277,87 @@ export function createSwarmTools(deps: SwarmToolDeps): SwarmTool[] {
     },
   }
 
+  const coordinateTool: SwarmTool = {
+    name: "swarm_coordinate",
+    description:
+      "Plan and durably start a mixed-strategy run. Creates a RUNNING manifest, resolves policy (manual override hard-wins), routes every branch through the trust-aware portfolio router, assigns each branch to a provider/model, logs PLAN/ASSIGN/SHADOW events, and returns assignments so the parent model can dispatch lanes. Idempotent: re-coordinating an existing non-terminal run returns existing progress without resetting it.",
+    input: objectSchema(
+      {
+        ...TASK_PROPS,
+        runId: { type: "string" },
+        capsuleName: { type: "string" },
+        capsuleVersion: { type: "number" },
+        sla: { type: "string", enum: ["FASTEST", "CHEAPEST", "HIGHEST_QUALITY", "BALANCED", "LOWEST_PROVIDER_RISK"] },
+        deadlineSeconds: { type: "number" },
+        branchRoi: { type: "string", description: "JSON array of per-branch ROI inputs for cancellation/priority decisions." },
+      },
+      ["task"],
+    ),
+    execute: (raw) => {
+      try {
+        const input = taskInput(raw)
+        if (raw?.sla !== undefined) input.sla = raw.sla as SlaMode
+        if (typeof raw?.deadlineSeconds === "number") input.deadlineSeconds = raw.deadlineSeconds
+        let branchRoi: BranchRoiInput[] = []
+        if (Array.isArray(raw?.branchRoi)) {
+          try {
+            branchRoi = JSON.parse(raw.branchRoi)
+          } catch {
+            branchRoi = []
+          }
+        }
+        const result = coordinator.coordinate(input, {
+          runId: str(raw?.runId),
+          capsuleName: str(raw?.capsuleName) || undefined,
+          capsuleVersion: num(raw?.capsuleVersion),
+        })
+        const mixed = mixedStrategy.select(input, {
+          sla: input.sla,
+          deadlineSeconds: input.deadlineSeconds,
+          branchRoi,
+          allowTransitions: true,
+        })
+        return ok(
+          {
+            ...result,
+            mixedStrategy: {
+              subgraphs: mixed.subgraphs,
+              transitions: mixed.transitions,
+              cancellations: mixed.cancellations,
+              priorityUp: mixed.priorityUp,
+              anytime: mixed.anytime,
+              deadline: mixed.deadline,
+              deadlinePressure: mixed.deadlinePressure,
+              guard: mixed.guard,
+              rois: mixed.rois,
+              message: mixed.message,
+            },
+          },
+          { runId: result.runId, topology: result.plan.topology, agents: result.plan.agents },
+        )
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e))
+      }
+    },
+  }
+
+  const recoverTool: SwarmTool = {
+    name: "swarm_recover",
+    description:
+      "Recover a run after a crash or restart. Loads the manifest, sets RECOVERING, rebuilds lane+checkpoint state from the event log after the last durable sequence, restores provider state, decides RESUME vs RESTART per branch, and returns assignments for unfinished work. Idempotent.",
+    input: objectSchema({ runId: { type: "string" } }, ["runId"]),
+    execute: (raw) => {
+      try {
+        const runId = str(raw?.runId)
+        if (!runId) return fail("runId is required")
+        const result = coordinator.recover(runId)
+        return ok(result, { runId: result.runId, status: result.status, assignments: result.assignments.length })
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e))
+      }
+    },
+  }
+
   return [
     planTool,
     routeTool,
@@ -1276,5 +1379,7 @@ export function createSwarmTools(deps: SwarmToolDeps): SwarmTool[] {
     providerReliabilityTool,
     portfolioReportTool,
     planWithSlaTool,
+    coordinateTool,
+    recoverTool,
   ]
 }

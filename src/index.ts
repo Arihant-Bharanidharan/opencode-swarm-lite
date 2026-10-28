@@ -35,6 +35,13 @@ import { AdaptiveScheduler } from "./runtime/scheduler.js"
 import { createSwarmTools } from "./runtime/tools.js"
 import type { ModelProfile } from "./runtime/types.js"
 import { RunHistory } from "./runtime/history.js"
+import { RunManifestStore } from "./runtime/run-manifest.js"
+import { RunCoordinator } from "./runtime/coordinator.js"
+import { MixedStrategyScheduler } from "./runtime/mixed-strategy.js"
+import { PortfolioRouter } from "./runtime/portfolio-router.js"
+import { TrustStore } from "./runtime/trust.js"
+import { CheckpointManager } from "./runtime/checkpoint.js"
+import { PolicyStore } from "./runtime/policy.js"
 
 export interface RateLimitOptions {
   enabled: boolean
@@ -600,6 +607,12 @@ export default Plugin.define({
     const capsuleStore = new CapsuleStore(path.join(stateDir, "capsules"))
     const runtimeTelemetry = new Telemetry(path.join(stateDir, "events.jsonl"))
     const history = new RunHistory(path.join(stateDir, "history.json"))
+    const trustStore = new TrustStore(path.join(stateDir, "trust.json"))
+    const checkpointManager = new CheckpointManager(path.join(stateDir, "checkpoint.json"), {
+      telemetry: runtimeTelemetry,
+    })
+    const policyStore = new PolicyStore(path.join(stateDir, "policy.json"))
+    const runManifestStore = new RunManifestStore({ dir: path.join(stateDir, "runs") })
     const scheduler = new AdaptiveScheduler({
       stats: runtimeStats,
       router: runtimeRouter,
@@ -615,6 +628,31 @@ export default Plugin.define({
         minSpeedupBatch: num(ctx.options.minSpeedupBatch, 1.03, 1),
         minSavingsSeconds: num(ctx.options.minSavingsSeconds, 5, 0),
       },
+    })
+    const runCoordinator = new RunCoordinator({
+      manifest: runManifestStore,
+      telemetry: runtimeTelemetry,
+      checkpoint: checkpointManager,
+      policy: policyStore,
+      scheduler,
+      router: runtimeRouter,
+      health: providerHealth,
+      lanes: lanePool,
+      capsules: capsuleStore,
+      history,
+      stats: runtimeStats,
+    })
+    const mixedStrategyScheduler = new MixedStrategyScheduler({
+      stats: runtimeStats,
+      scheduler,
+      router: runtimeRouter,
+      health: providerHealth,
+    })
+    const portfolioRouter = new PortfolioRouter({
+      router: runtimeRouter,
+      health: providerHealth,
+      trust: trustStore,
+      stats: runtimeStats,
     })
 
     /** Read + parse the role registry (missing/unreadable file = registry-only built-ins). */
@@ -682,6 +720,10 @@ export default Plugin.define({
       telemetry: runtimeTelemetry,
       scheduler,
       history,
+      manifest: runManifestStore,
+      coordinator: runCoordinator,
+      mixedStrategy: mixedStrategyScheduler,
+      portfolioRouter,
     })
     await ctx.tool.transform((editor) => {
       for (const tool of runtimeTools) {
