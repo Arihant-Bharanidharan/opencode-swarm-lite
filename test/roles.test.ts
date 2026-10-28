@@ -1,5 +1,5 @@
 /**
- * v1.4.0 tests: the extensible role registry - parse rules, resolution
+ * Role registry tests: parse rules, resolution
  * (add / modify / broaden, extends chains, cycles, last-wins), rendering of
  * the Specialist roles section, the /swarm-roles listing, and skillContent
  * integration (including 6-arg backward compatibility).
@@ -24,6 +24,8 @@ const check = (name: string, cond: boolean) => {
 const MEM = "/mem/swarm-memory.md"
 const RELAY = "/mem/swarm-relay.md"
 const ROLES = "/mem/swarm-roles.md"
+
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
 
 // ---- 1. parseRoles: block recognition ----
 const p1 = parseRoles("### role: security-auditor\n- extends: verifier\n- One-line purpose.\n- Terse rule two.")
@@ -163,14 +165,13 @@ check("skill: custom role lane appears", full.includes("### Security auditor lan
 check("skill: workflow references the registry path", full.includes(`\`${ROLES}\``))
 check("skill: dispatch step references registry roles", full.includes(`a registry role from \`${ROLES}\``))
 check("skill: broadened built-in text lands in the skill", full.includes("Extra builder rule."))
-check("skill: attribution carries v1.4.0", full.includes("opencode-swarm-lite v1.4.0"))
+check("skill: attribution carries the published version", full.includes(`opencode-swarm-lite v${pkg.version}`))
 
 const manual = skillContent("manual", MEM, 5, false, 0, RELAY, blocks, ROLES)
 check("skill: manual mode renders the registry too", manual.includes("### Security auditor lane (custom)"))
 check("skill: manual mode keeps the registry contract", manual.includes("### Role registry - add, modify, or broaden roles yourself"))
 
-const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
-check("package.json bumped to 1.4.0", pkg.version === "1.4.0")
+check("package.json version matches VERSION in src/index.ts", pkg.version === "2.0.0")
 
 console.log(`\n${pass} passed, ${fail} failed`)
 if (fail > 0) process.exit(1)

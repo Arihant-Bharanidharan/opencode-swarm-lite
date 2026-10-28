@@ -94,7 +94,7 @@ check("adaptive: doctrine section embedded", /## Lane doctrine/.test(adaptive))
 check("adaptive: doctrine rendered verbatim", adaptive.includes(DOCTRINE.slice(0, 80)))
 check("adaptive: relay section embeds relay path", adaptive.includes("/mem/swarm-relay.md"))
 check("adaptive: workflow has relay step", /4\. \*\*Relay\*\*/.test(adaptive))
-check("adaptive: workflow has refine step", /6\. \*\*Refine\*\*/.test(adaptive))
+check("adaptive: workflow invokes the refine loop", /6\. \*\*Verify adaptively\*\*.*refine loop/.test(adaptive))
 check("adaptive: refine section shows configured passes", /up to 1 pass —/.test(adaptive))
 check(
   "adaptive: specialist roster complete (architect/builder/verifier/coder/researcher/reviewer/multimodal)",

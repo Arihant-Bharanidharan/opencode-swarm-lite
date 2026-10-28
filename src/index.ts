@@ -26,6 +26,15 @@ import type { Skill } from "@opencode/schema"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { StatsStore } from "./runtime/stats.js"
+import { ProviderHealth, Router } from "./runtime/provider.js"
+import { LanePool } from "./runtime/lanes.js"
+import { CapsuleStore } from "./runtime/capsules.js"
+import { Telemetry } from "./runtime/telemetry.js"
+import { AdaptiveScheduler } from "./runtime/scheduler.js"
+import { createSwarmTools } from "./runtime/tools.js"
+import type { ModelProfile } from "./runtime/types.js"
+import { RunHistory } from "./runtime/history.js"
 
 export interface RateLimitOptions {
   enabled: boolean
@@ -88,9 +97,19 @@ export class DispatchRateLimiter {
 /** Brand a plain string as the schema requires (runtime value is unchanged). */
 const brand = <T>(value: string): T => value as unknown as T
 
+/** Small local helpers for tool-hook telemetry (never throw into the harness). */
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+const str = (value: unknown, fallback = ""): string => (typeof value === "string" ? value : fallback)
+const roundSeconds = (value: number): number => Math.round(value * 10) / 10
+const sanitizeError = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "tool error"
+  return message.length > 500 ? `${message.slice(0, 500)}...` : message
+}
+
 const AUTHOR = "Arihant Bharanidhran"
 const EMAIL = "arihantbharani@outlook.com"
-const VERSION = "1.4.0"
+const VERSION = "2.0.0"
 
 /**
  * Secret watermark: encodes "SWARMLITE/ARIHANT/2026" as Unicode tag characters
@@ -455,16 +474,34 @@ Orchestration protocol. No gates, no receipts, no enforced reviews - you decide 
 
 ${modeSection}
 
+## Adaptive scheduler (v2) - serial is the default
+
+Before spawning anything, call **swarm_plan** with the real shape of the task: \`branches\`, \`branchSeconds\`, \`independence\`, \`sharedContext\`, \`ambiguity\`, \`risk\`, \`verificationValue\`, and \`tasks\`/\`nodes\` when the work is known. It returns \`runId\`, the chosen topology, the exact lane count, waves, batches, model routes, verification level, estimates, reasons and shadow alternatives.
+
+Obey the plan. The scheduler exists to stop you from fanning out when serial wins:
+
+- **SERIAL** - do the work yourself. Spawn nothing. (One lane of work is not a swarm.)
+- **BATCHED_WORKER** - spawn exactly \`agents\` workers; put one \`batches[i]\` per worker in its brief. Never spawn one agent per microtask.
+- **SMALL_SWARM / FULL_SWARM** - spawn at most \`agents\` lanes, in \`waves\`. Do not invent extra lanes; do not exceed \`agents\`.
+- **SPECULATIVE_SWARM** - spawn the planned scouts only. Merge their findings with **swarm_converge**; expand only when the uncertainty is real, and stop the redundant branches early.
+- **PIPELINE** - dispatch DAG stages in the returned waves. Never start a node before its edges finish.
+
+Before dispatch: use **swarm_capsule** \`attach\` (or create/merge) and paste the capsule text into every lane brief; attach only verified facts as facts, mark hypotheses. Use **swarm_route** for provider/model choice; route within a lane, never create a new top-level agent. Use **swarm_lane** \`acquire\` to reuse a compatible idle lane (same role/model/category/capsule scope) and \`register\`/\`release\` for fresh ones; never transplant context across scopes.
+
+After dispatch: record every lane with **swarm_record** (startup, work, tokens, status, warm). After integration call **swarm_verify** (or use the level in the plan) - V0 self-check, V1 repro, V2 independent verifier, V3 spec-derived tests + targeted judge, V4 adversarial verifier. Start cheap; escalate only on disagreement, low confidence, weak tests or high impact. A judge is one optional step, never the default. Close the run with **swarm_record** actuals and inspect **swarm_status** / **swarm_replay**. If a lane fails or a provider is cooling down, reroute or cancel - never hammer it.
+
+If no scheduler tool is available, fall back to: total expected work under ~60s or fewer than 2 genuinely independent branches -> serial; otherwise at most 3 lanes and batch small tasks.
+
 ## Workflow
 
 1. **Memory + registry** - read \`${memoryPath}\` if it exists (apply relevant lessons) and \`${rolesPath}\` if it exists (project-specific or extended specialist roles - see the Role registry under Specialist roles).
-2. **Plan** - split the task into independent lanes, one lane per independent workstream. Each lane becomes one subagent with a self-contained brief: goal, relevant files/context, verification method, expected report, and the lane doctrine (below).
-3. **Dispatch** - launch lanes in parallel with the \`subagent\` tool in ONE message per wave, background by default. Attach the matching specialist brief (a built-in roster entry or a registry role from \`${rolesPath}\`) + doctrine to each lane's prompt. Prefer dedicated agents if available (\`swarm-coder\`, \`swarm-researcher\`, \`swarm-reviewer\`); otherwise the builtin \`general\` subagent with the specialist brief. Don't give two lanes the same files.
+2. **Plan (scheduler first)** - call \`swarm_plan\`. If it chooses SERIAL, do the work yourself and skip steps 3-4; only a non-serial plan earns lanes. For a swarm plan, split the work into exactly the planned number of independent bursts, one lane per workstream. Each lane brief is self-contained: goal, relevant files/context (plus the capsule text), verification method, expected report, and the lane doctrine (below).
+3. **Dispatch exactly the plan** - launch at most \`agents\` lanes with the \`subagent\` tool in ONE message per wave, background by default. Attach the matching specialist brief (a built-in roster entry or a registry role from \`${rolesPath}\`) + doctrine to each lane's prompt. Prefer dedicated agents if available (\`swarm-coder\`, \`swarm-researcher\`, \`swarm-reviewer\`); otherwise the builtin \`general\` subagent with the specialist brief. Don't give two lanes the same files. For BATCHED_WORKER, give each worker its returned batch; never one agent per microtask.
 4. **Relay** - lanes coordinate via \`${relayPath}\`; you (orchestrator) also read it between waves to re-route handoffs.
 5. **Integrate** - combine results, resolve conflicts yourself, run tests/linters.
-6. **Refine** - run the refine loop below until critique converges. This is where quality comes from.
+6. **Verify adaptively** - use the plan's verification level (or \`swarm_verify\`) and the refine loop below until critique converges. Escalate only on real disagreement, low confidence, weak tests or high impact; do not add a judge by reflex.
 7. **Review (optional)** - spawn a reviewer lane only when the user asked, or when the change is high-risk. Findings inform you; they don't block you.
-8. **Memory** - append short bullets to \`${memoryPath}\`: what worked, what didn't, project facts worth keeping. Keep the file under ~150 lines; prune stale entries.
+8. **Record + memory** - call \`swarm_record\` for each lane and close the run with actuals/quality; inspect \`swarm_replay\` to compare prediction with reality. Append short bullets to \`${memoryPath}\`: what worked, what didn't, project facts worth keeping. Keep the file under ~150 lines; prune stale entries.
 
 ## Lane doctrine
 
@@ -537,6 +574,49 @@ export default Plugin.define({
         ? (ctx.options.rolesPath as string)
         : path.join(path.dirname(memoryPath), "swarm-roles.md")
 
+    // ---- adaptive runtime state (v2): stats, circuits, lanes, capsules, telemetry ----
+    // Keep all runtime files in their own directory so v1 memory/relay/roles files
+    // are never rewritten by the scheduler.
+    const stateDir =
+      typeof ctx.options.stateDir === "string" && ctx.options.stateDir.length > 0
+        ? (ctx.options.stateDir as string)
+        : path.join(path.dirname(memoryPath), "swarm-state")
+    const runtimeStats = new StatsStore(path.join(stateDir, "stats.json"))
+    const providerHealth = new ProviderHealth(path.join(stateDir, "provider-health.json"), {
+      failureThreshold: num(ctx.options.providerFailureThreshold, 3, 1),
+      cooldownMs: num(ctx.options.providerCooldownMs, 60_000, 1_000),
+      timeoutThreshold: num(ctx.options.providerTimeoutThreshold, 2, 1),
+      timeoutCooldownMs: num(ctx.options.providerTimeoutCooldownMs, 45_000, 1_000),
+    })
+    const runtimeRouter = new Router(runtimeStats, providerHealth, {
+      profiles: Array.isArray(ctx.options.profiles) ? (ctx.options.profiles as ModelProfile[]) : undefined,
+      qualityWeight: num(ctx.options.qualityWeight, 0.25, 0),
+      quotaGroups: ctx.options.quotaGroups as Record<string, { maxConcurrent: number }> | undefined,
+    })
+    const lanePool = new LanePool(path.join(stateDir, "lanes.json"), {
+      ttlMs: num(ctx.options.laneTtlMs, 10 * 60_000, 5_000),
+      maxUses: num(ctx.options.laneMaxUses, 4, 1),
+    })
+    const capsuleStore = new CapsuleStore(path.join(stateDir, "capsules"))
+    const runtimeTelemetry = new Telemetry(path.join(stateDir, "events.jsonl"))
+    const history = new RunHistory(path.join(stateDir, "history.json"))
+    const scheduler = new AdaptiveScheduler({
+      stats: runtimeStats,
+      router: runtimeRouter,
+      health: providerHealth,
+      lanes: lanePool,
+      config: {
+        maxAgents: num(ctx.options.swarmMaxAgents ?? ctx.options.maxAgents, 8, 1),
+        maxTasksPerBatch: num(ctx.options.maxTasksPerBatch, 6, 1),
+        qualityWeight: num(ctx.options.qualityWeight, 0.25, 0),
+        judgeAvailable: ctx.options.judgeAvailable !== false,
+        judgeCostSeconds: num(ctx.options.judgeCostSeconds, 45, 0),
+        minSpeedupSwarm: num(ctx.options.minSpeedupSwarm, 1.08, 1),
+        minSpeedupBatch: num(ctx.options.minSpeedupBatch, 1.03, 1),
+        minSavingsSeconds: num(ctx.options.minSavingsSeconds, 5, 0),
+      },
+    })
+
     /** Read + parse the role registry (missing/unreadable file = registry-only built-ins). */
     const loadRoles = (): RoleBlock[] => {
       try {
@@ -590,6 +670,33 @@ export default Plugin.define({
       })
     })
 
+    // ---- custom runtime tools (plan/route/capsules/lanes/converge/verify/...) ----
+    // These are the scheduler's control surface. They never spawn agents: the
+    // parent model remains the only orchestration loop and calls `subagent`.
+    const runtimeTools = createSwarmTools({
+      stats: runtimeStats,
+      router: runtimeRouter,
+      health: providerHealth,
+      lanes: lanePool,
+      capsules: capsuleStore,
+      telemetry: runtimeTelemetry,
+      scheduler,
+      history,
+    })
+    await ctx.tool.transform((editor) => {
+      for (const tool of runtimeTools) {
+        editor.add({
+          name: tool.name,
+          description: tool.description,
+          input: tool.input,
+          execute: async (input, toolCtx) => {
+            const result = await tool.execute(input, { sessionID: toolCtx.sessionID })
+            return { content: result.content, metadata: result.metadata }
+          },
+        })
+      }
+    })
+
     // re-render the skill whenever the stored mode or the role registry changes;
     // add-if-missing so a missing skill is re-registered instead of silently skipped
     const refreshSkill = async () => {
@@ -630,6 +737,70 @@ export default Plugin.define({
     // ---- role registry hot-refresh: pick up registry edits made through write/edit/patch ----
     await ctx.tool.hook("execute.after", (event) => {
       if (event.tool === "write" || event.tool === "edit" || event.tool === "patch") void maybeRefreshRoles()
+    })
+
+    // ---- automatic subagent telemetry ----
+    // The scheduler tools are advisory; the model can still call `subagent`
+    // directly. These hooks make every actual spawn visible without changing
+    // the ONE PARENT -> LANES architecture: no agent is created here.
+    const spawnStarted = new Map<string, { at: number; agent: string; description: string; role: string }>()
+    await ctx.tool.hook("execute.before", (event) => {
+      if (event.tool !== "subagent") return
+      const input = asRecord(event.input)
+      const agent = str(input.agent ?? input.subagent_type, "general")
+      const description = str(input.description, "subagent lane")
+      const role = str(input.role ?? input.agent_role, "")
+      const resumedSessionID = str(input.sessionID ?? input.sessionId, "")
+      const warm = resumedSessionID.length > 0
+      const runId = runtimeTelemetry.latestPlan(event.sessionID)?.plan.runId
+      spawnStarted.set(event.id, { at: Date.now(), agent, description, role })
+      runtimeTelemetry.log(
+        "SPAWN",
+        {
+          auto: true,
+          agent,
+          role: role || undefined,
+          description,
+          promptChars: str(input.prompt).length,
+          toolCallID: event.id,
+          warm,
+          sessionID: resumedSessionID || undefined,
+        },
+        { runId, parentSessionID: event.sessionID },
+      )
+      runtimeTelemetry.log(
+        "ASSIGN",
+        { auto: true, agent, role: role || undefined, description, toolCallID: event.id, warm },
+        { runId, parentSessionID: event.sessionID },
+      )
+    })
+    await ctx.tool.hook("execute.after", (event) => {
+      if (event.tool !== "subagent") return
+      const started = spawnStarted.get(event.id)
+      spawnStarted.delete(event.id)
+      const input = asRecord(event.input)
+      const agent = started?.agent ?? str(input.agent ?? input.subagent_type, "general")
+      const description = started?.description ?? str(input.description, "subagent lane")
+      const elapsedSeconds = started ? Math.max(0, (Date.now() - started.at) / 1000) : undefined
+      const runId = runtimeTelemetry.latestPlan(event.sessionID)?.plan.runId
+      const okStatus = event.status === "completed"
+      const base = {
+        auto: true,
+        agent,
+        role: started?.role || undefined,
+        description,
+        elapsedSeconds: elapsedSeconds !== undefined ? roundSeconds(elapsedSeconds) : undefined,
+        toolCallID: event.id,
+      }
+      if (okStatus) {
+        runtimeTelemetry.log("LANE_DONE", base, { runId, parentSessionID: event.sessionID })
+      } else {
+        runtimeTelemetry.log(
+          "LANE_FAIL",
+          { ...base, error: event.status === "error" ? sanitizeError(event.error) : "unknown" },
+          { runId, parentSessionID: event.sessionID },
+        )
+      }
     })
 
     // ---- auto-compaction: trigger when a session grows past the threshold ----
