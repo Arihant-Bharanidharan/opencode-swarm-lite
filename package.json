@@ -24,6 +24,14 @@
     "rate-limit",
     "auto-compaction"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arihant-Bharanidharan/opencode-swarm-lite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Arihant-Bharanidharan/opencode-swarm-lite/issues"
+  },
+  "homepage": "https://github.com/Arihant-Bharanidharan/opencode-swarm-lite#readme",
   "exports": {
     ".": "./src/index.ts"
   },

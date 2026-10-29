@@ -217,8 +217,15 @@ Observed: 2.68× whole-arm corrected speedup; 4.98× clean parallel subset
 
 ## Installation
 
-The package is **not published to npm** (`opencode plugin add opencode-swarm-lite`
-returns a 404). Install from a local checkout:
+Install from npm:
+
+```bash
+npm install opencode-swarm-lite
+# or
+bun add opencode-swarm-lite
+```
+
+Or install from a source checkout:
 
 ```bash
 git clone https://github.com/Arihant-Bharanidharan/opencode-swarm-lite.git
