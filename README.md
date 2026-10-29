@@ -2,6 +2,11 @@
 
 > **An adaptive execution runtime that knows when to swarm — and when not to.**
 
+[![npm version](https://img.shields.io/npm/v/opencode-swarm-lite.svg)](https://www.npmjs.com/package/opencode-swarm-lite)
+[![CI](https://github.com/Arihant-Bharanidharan/opencode-swarm-lite/actions/workflows/ci.yml/badge.svg)](https://github.com/Arihant-Bharanidharan/opencode-swarm-lite/actions/workflows/ci.yml)
+[![tests](https://img.shields.io/badge/tests-991%20passed-brightgreen)](#testing)
+[![license](https://img.shields.io/npm/l/opencode-swarm-lite.svg)](LICENSE)
+
 `opencode-swarm-lite` is an adaptive multi-model agent orchestration runtime for
 [OpenCode](https://opencode.ai). It predicts whether parallel agents are worth
 spawning, chooses different execution strategies across task subgraphs, routes work
@@ -11,6 +16,103 @@ recover checkpointed swarm runs after coordinator failure.
 **The goal is not for the swarm to always win. The goal is for the scheduler to know
 when the swarm will win.** Serial execution is the default; fan-out must clear a
 measured speedup bar before any worker is spawned.
+
+**Highlights at a glance:**
+
+- 🎯 **Cost model first** — serial is the default; every spawn must clear a measured speedup bar
+- 🏗️ **Six topologies** — `SERIAL`, `SMALL_SWARM`, `FULL_SWARM`, `SPECULATIVE_SWARM`, `PIPELINE`, `BATCHED_WORKER`
+- 📈 **4.98× measured speedup** on a clean parallel subset (86.1% parallel efficiency)
+- 🔀 **Multi-model routing** — provider health, circuit breakers, trust-aware portfolio routing
+- 🛡️ **Crash recovery** — durable run manifests, checkpoints, selective rollback
+- ✅ **Adaptive verification** — V0 self-check → V4 adversarial verifier
+- 🧪 **Benchmark-driven** — 991 tests, published numbers including a case where the swarm *lost*
+
+## Contents
+
+- [Quick start](#quick-start)
+- [Why it exists](#why-it-exists)
+- [Benchmarks](#benchmarks)
+- [Adaptive decision example](#adaptive-decision-example)
+- [Architecture](#architecture)
+- [Features](#features)
+- [Usage](#usage)
+- [Predictor contract](#predictor-contract)
+- [Supported topologies](#supported-topologies)
+- [Configuration](#configuration)
+- [Testing](#testing)
+- [Development](#development)
+- [Documentation](#documentation)
+- [License](#license) · [Contributing](#contributing) · [Security](#security)
+
+---
+
+## Quick start
+
+**1. Install from npm:**
+
+```bash
+npm install opencode-swarm-lite
+# or
+bun add opencode-swarm-lite
+```
+
+**2. Register the plugin** in `~/.config/opencode/opencode.json` (or a project
+`opencode.json`):
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "opencode-swarm-lite",
+      "options": {
+        "mode": "adaptive",
+        "ratePerSecond": 4,
+        "burst": 8,
+        "refinePasses": 1,
+        "compactThreshold": 40,
+        "compactCooldownMs": 30000
+      }
+    }
+  ]
+}
+```
+
+All options are optional — see [Configuration](#configuration) for the full table
+with defaults.
+
+**3. Run:**
+
+```text
+/swarm "Refactor the authentication module across three files and add unit tests"
+```
+
+<details>
+<summary>Installing from a source checkout instead</summary>
+
+```bash
+git clone https://github.com/Arihant-Bharanidharan/opencode-swarm-lite.git
+cd opencode-swarm-lite
+bun install
+bun run typecheck
+bun run test
+```
+
+Then point the plugin at the local path:
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "file:///C:/path/to/opencode-swarm-lite",
+      "options": { "mode": "adaptive" }
+    }
+  ]
+}
+```
+
+</details>
+
+---
 
 ## Why it exists
 
@@ -25,129 +127,11 @@ drive its cost-aware decisions.
 
 ---
 
-## Architecture
-
-```
-                    Parent Coordinator
-                           │
-                    Cost / Policy Engine
-                           │
-                    Task DAG Planner
-                           │
-        ┌──────────────────┼───────────────────┐
-        │                  │                   │
-      SERIAL             BATCHED_WORKER      PIPELINE
-        │                  │                   │
-        └───────────┬──────┴────────────┬──────┘
-                    │                   │
-              SPECULATIVE          FULL_SWARM / SMALL_SWARM
-                    │                   │
-                    └─────────┬─────────┘
-                              │
-                    Provider Portfolio Router
-                              │
-              ┌───────────────┼───────────────┐
-              │               │               │
-           Model A         Model B         Model C
-                              │
-                    Trust / Reliability Layer
-                              │
-                    Checkpoints & Run Manifests
-                              │
-        Durable Events · Selective Rollback · Crash Recovery
-```
-
-There is **one parent**. The parent model remains the only orchestration loop and is
-the only entity that calls `subagent`. Scheduler tools (`swarm_plan`, `swarm_route`,
-`swarm_capsule`, `swarm_lane`, `swarm_record`, `swarm_verify`, etc.) are advisory —
-they never spawn agents.
-
-Data flow:
-
-1. **Task input** arrives with shape hints (branches, branchSeconds, independence,
-   sharedContext, ambiguity, risk, verificationValue, deadline, SLA mode).
-2. **Cost / policy engine** (`AdaptiveScheduler`) estimates serial vs every swarm shape,
-   applies SLA and deadline pressure, and runs the cost guard.
-3. **Task DAG planner** builds waves/batches and a critical-path schedule when edges are
-   present (PIPELINE).
-4. **Provider portfolio router** picks model/provider per lane using health, trust, and
-   reliability scores; blocked providers are excluded.
-5. **Execution** dispatches lanes in waves (token-bucket rate limited), with warm-lane
-   reuse, straggler detection, and hedging.
-6. **Verification** runs adaptively (V0–V4) and the refine loop converges on quality.
-7. **Recovery**: run manifests, checkpoints, and the coordinator resume/restart on
-   crashes; selective rollback to prior snapshots.
-
----
-
-## Core Features
-
-### Adaptive Planning
-
-- Serial vs swarm prediction — cost model decides topology before any spawn
-- Nine-field snake_case predictor contract (see Predictor Contract)
-- Mixed-strategy subgraph planning (BATCH / PIPELINE / SPECULATIVE_SWARM / FULL_SWARM
-  in one workload)
-- Speculative fan-out with early branch termination
-- Task batching (BATCHED_WORKER: one worker per batch, never one agent per microtask)
-- Critical-path scheduling (PIPELINE DAG)
-- ROI cancellation with hysteresis
-- Information-gain scheduling
-
-### Runtime Execution
-
-- Specialist subagent lanes: architect, builder, verifier, coder, researcher, reviewer,
-  multimodal analyst
-- Extensible role registry (add / modify / broaden roles at runtime)
-- Work stealing and warm-lane reuse
-- Deadline pressure and anytime stages (PRELIMINARY → VERIFIED → FINAL)
-- Straggler detection and hedging
-- Token-bucket dispatch rate limiting (default 4/s, burst 8)
-
-### Multi-Model / Provider Routing
-
-> **Multi-model means routing subagent work across different LLM models/providers.
-> It does not mean image/audio multimodality.**
-
-- Provider reliability tracking with circuit breaker (closed / open / half_open)
-- Portfolio routing with trust-aware specialization
-- Degrade / reallocate feedback loop (`recordDegradation`, `feedback()`)
-- Rate-limit-aware behavior; provider limits are respected — no quota bypassing
-- Recommended models published per plan (`recommended_models`)
-
-### Verification
-
-- Adaptive verification (V0 self-check → V4 adversarial verifier)
-- Confidence calibration and trust scoring
-- Diversity-aware consensus with minority verdict preservation
-- Deterministic verification preference; provenance tracking
-
-### Resilience
-
-- Durable event log and run manifests with idempotent opId dedupe
-- Checkpoints, snapshots, and selective rollback
-- Coordinator crash recovery (resume / restart decisions, forced provider restoration)
-- Idempotent replay of completed runs
-
-### Learning / Policy
-
-- Historical runtime signals and shape baselines
-- Self-tuning policy with promotion / rollback gates
-- Shadow policy and manual override
-- SLA modes: FASTEST, CHEAPEST, HIGHEST_QUALITY, BALANCED, LOWEST_PROVIDER_RISK
-
-### Observability
-
-- Scheduler dashboard, provider health dashboard, calibration dashboard
-- Waste breakdown and multi-dimensional grading
-- Telemetry and replay
-
----
-
 ## Benchmarks
 
 All benchmark figures come from the published fixture under `benchmark/`
-(`SPEC.md`, `workspace/`, `tests/`). See `docs/BENCHMARKS.md` for full methodology.
+(`SPEC.md`, `workspace/`, `tests/`). See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
+for full methodology.
 
 ### Positive swarm benchmark
 
@@ -215,87 +199,126 @@ Observed: 2.68× whole-arm corrected speedup; 4.98× clean parallel subset
 
 ---
 
-## Installation
+## Architecture
 
-Install from npm:
-
-```bash
-npm install opencode-swarm-lite
-# or
-bun add opencode-swarm-lite
+```
+                    Parent Coordinator
+                           │
+                    Cost / Policy Engine
+                           │
+                    Task DAG Planner
+                           │
+        ┌──────────────────┼───────────────────┐
+        │                  │                   │
+      SERIAL             BATCHED_WORKER      PIPELINE
+        │                  │                   │
+        └───────────┬──────┴────────────┬──────┘
+                    │                   │
+              SPECULATIVE          FULL_SWARM / SMALL_SWARM
+                    │                   │
+                    └─────────┬─────────┘
+                              │
+                    Provider Portfolio Router
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+           Model A         Model B         Model C
+                              │
+                    Trust / Reliability Layer
+                              │
+                    Checkpoints & Run Manifests
+                              │
+        Durable Events · Selective Rollback · Crash Recovery
 ```
 
-Or install from a source checkout:
+There is **one parent**. The parent model remains the only orchestration loop and is
+the only entity that calls `subagent`. Scheduler tools (`swarm_plan`, `swarm_route`,
+`swarm_capsule`, `swarm_lane`, `swarm_record`, `swarm_verify`, etc.) are advisory —
+they never spawn agents.
 
-```bash
-git clone https://github.com/Arihant-Bharanidharan/opencode-swarm-lite.git
-cd opencode-swarm-lite
-bun install
-bun run typecheck
-bun run test
-```
+**Data flow:**
 
-Then reference it in your OpenCode config (`~/.config/opencode/opencode.json` or a
-project `opencode.json`):
-
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "file:///C:/path/to/opencode-swarm-lite",
-      "options": {
-        "mode": "adaptive",
-        "ratePerSecond": 4,
-        "burst": 8,
-        "refinePasses": 1,
-        "compactThreshold": 40,
-        "compactCooldownMs": 30000
-      }
-    }
-  ]
-}
-```
-
-This repository is the plugin source; there is no separate npm publish step.
+1. **Task input** arrives with shape hints (branches, branchSeconds, independence,
+   sharedContext, ambiguity, risk, verificationValue, deadline, SLA mode).
+2. **Cost / policy engine** (`AdaptiveScheduler`) estimates serial vs every swarm shape,
+   applies SLA and deadline pressure, and runs the cost guard.
+3. **Task DAG planner** builds waves/batches and a critical-path schedule when edges are
+   present (PIPELINE).
+4. **Provider portfolio router** picks model/provider per lane using health, trust, and
+   reliability scores; blocked providers are excluded.
+5. **Execution** dispatches lanes in waves (token-bucket rate limited), with warm-lane
+   reuse, straggler detection, and hedging.
+6. **Verification** runs adaptively (V0–V4) and the refine loop converges on quality.
+7. **Recovery**: run manifests, checkpoints, and the coordinator resume/restart on
+   crashes; selective rollback to prior snapshots.
 
 ---
 
-## Configuration
+## Features
 
-Documented options (all read from `opencode.json` plugin options):
+### Adaptive planning
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `"adaptive" \| "manual"` | `"adaptive"` | Swarm shape policy |
-| `ratePerSecond` | `number` | `4` | Sustained subagent dispatches/sec |
-| `burst` | `number` | `8` | Immediate dispatches before throttling |
-| `rateLimitEnabled` | `boolean` | `true` | Master switch for rate limiting |
-| `refinePasses` | `number` (0–3) | `1` | Refine-loop passes after integration |
-| `compactThreshold` | `number` | `40` | Messages before compaction prompt |
-| `compactCooldownMs` | `number` | `30000` | Minimum ms between compactions |
-| `swarmMaxAgents` / `maxAgents` | `number` | `8` | Max concurrent lanes |
-| `maxTasksPerBatch` | `number` | `6` | Max tasks per batched worker |
-| `qualityWeight` | `number` (0–1) | `0.25` | Quality vs speed weight |
-| `judgeAvailable` | `boolean` | `true` | Whether an LLM judge may be used |
-| `judgeCostSeconds` | `number` | `45` | Estimated judge cost in seconds |
-| `minSpeedupSwarm` | `number` | `1.08` | Min speedup for swarm over serial |
-| `minSpeedupBatch` | `number` | `1.03` | Min speedup for batch over serial |
-| `minSavingsSeconds` | `number` | `5` | Min seconds saved to justify fan-out |
-| `providerFailureThreshold` | `number` | `3` | Failures before circuit opens |
-| `providerCooldownMs` | `number` | `60000` | Circuit cooldown ms |
-| `providerTimeoutThreshold` | `number` | `2` | Timeouts before circuit opens |
-| `providerTimeoutCooldownMs` | `number` | `45000` | Timeout cooldown ms |
-| `laneTtlMs` | `number` | `600000` | Warm-lane TTL (10 min) |
-| `laneMaxUses` | `number` | `4` | Max uses per warm lane |
-| `stateDir` | `string` | `<memory-dir>/swarm-state` | Runtime state directory |
+- Serial vs swarm prediction — cost model decides topology before any spawn
+- Nine-field snake_case predictor contract (see [Predictor contract](#predictor-contract))
+- Mixed-strategy subgraph planning (BATCH / PIPELINE / SPECULATIVE_SWARM / FULL_SWARM
+  in one workload)
+- Speculative fan-out with early branch termination
+- Task batching (BATCHED_WORKER: one worker per batch, never one agent per microtask)
+- Critical-path scheduling (PIPELINE DAG)
+- ROI cancellation with hysteresis
+- Information-gain scheduling
 
-Runtime state files live under `stateDir` (stats, provider health, lanes, capsules,
-telemetry, history, trust, policy, run manifests, checkpoints). Memory, relay, and
-roles files live alongside (configurable via `memoryPath`, `relayPath`, `rolesPath`).
+### Runtime execution
+
+- Specialist subagent lanes: architect, builder, verifier, coder, researcher, reviewer,
+  multimodal analyst
+- Extensible role registry (add / modify / broaden roles at runtime)
+- Work stealing and warm-lane reuse
+- Deadline pressure and anytime stages (PRELIMINARY → VERIFIED → FINAL)
+- Straggler detection and hedging
+- Token-bucket dispatch rate limiting (default 4/s, burst 8)
+
+### Multi-model / provider routing
+
+> **Multi-model means routing subagent work across different LLM models/providers.
+> It does not mean image/audio multimodality.**
+
+- Provider reliability tracking with circuit breaker (closed / open / half_open)
+- Portfolio routing with trust-aware specialization
+- Degrade / reallocate feedback loop (`recordDegradation`, `feedback()`)
+- Rate-limit-aware behavior; provider limits are respected — no quota bypassing
+- Recommended models published per plan (`recommended_models`)
+
+### Verification
+
+- Adaptive verification (V0 self-check → V4 adversarial verifier)
+- Confidence calibration and trust scoring
+- Diversity-aware consensus with minority verdict preservation
+- Deterministic verification preference; provenance tracking
+
+### Resilience
+
+- Durable event log and run manifests with idempotent opId dedupe
+- Checkpoints, snapshots, and selective rollback
+- Coordinator crash recovery (resume / restart decisions, forced provider restoration)
+- Idempotent replay of completed runs
+
+### Learning / policy
+
+- Historical runtime signals and shape baselines
+- Self-tuning policy with promotion / rollback gates
+- Shadow policy and manual override
+- SLA modes: FASTEST, CHEAPEST, HIGHEST_QUALITY, BALANCED, LOWEST_PROVIDER_RISK
+
+### Observability
+
+- Scheduler dashboard, provider health dashboard, calibration dashboard
+- Waste breakdown and multi-dimensional grading
+- Telemetry and replay
 
 ---
 
-## Example Usage
+## Usage
 
 ### Example 1 — Adaptive (default)
 
@@ -335,7 +358,7 @@ The mixed-strategy scheduler applies SLA modes, deadline pressure, anytime stage
 
 ---
 
-## Predictor Contract
+## Predictor contract
 
 Every `swarm_plan` returns nine published fields in snake_case. These are the external
 contract — do not rename them in integrations or documentation.
@@ -354,7 +377,7 @@ contract — do not rename them in integrations or documentation.
 
 ---
 
-## Supported Topologies
+## Supported topologies
 
 | Topology | Behavior |
 |---|---|
@@ -369,6 +392,42 @@ Do not use `"SWARM"` — it is not a real topology.
 
 ---
 
+## Configuration
+
+Documented options (all read from `opencode.json` plugin options; full reference in
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)):
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `"adaptive" \| "manual"` | `"adaptive"` | Swarm shape policy |
+| `ratePerSecond` | `number` | `4` | Sustained subagent dispatches/sec |
+| `burst` | `number` | `8` | Immediate dispatches before throttling |
+| `rateLimitEnabled` | `boolean` | `true` | Master switch for rate limiting |
+| `refinePasses` | `number` (0–3) | `1` | Refine-loop passes after integration |
+| `compactThreshold` | `number` | `40` | Messages before compaction prompt |
+| `compactCooldownMs` | `number` | `30000` | Minimum ms between compactions |
+| `swarmMaxAgents` / `maxAgents` | `number` | `8` | Max concurrent lanes |
+| `maxTasksPerBatch` | `number` | `6` | Max tasks per batched worker |
+| `qualityWeight` | `number` (0–1) | `0.25` | Quality vs speed weight |
+| `judgeAvailable` | `boolean` | `true` | Whether an LLM judge may be used |
+| `judgeCostSeconds` | `number` | `45` | Estimated judge cost in seconds |
+| `minSpeedupSwarm` | `number` | `1.08` | Min speedup for swarm over serial |
+| `minSpeedupBatch` | `number` | `1.03` | Min speedup for batch over serial |
+| `minSavingsSeconds` | `number` | `5` | Min seconds saved to justify fan-out |
+| `providerFailureThreshold` | `number` | `3` | Failures before circuit opens |
+| `providerCooldownMs` | `number` | `60000` | Circuit cooldown ms |
+| `providerTimeoutThreshold` | `number` | `2` | Timeouts before circuit opens |
+| `providerTimeoutCooldownMs` | `number` | `45000` | Timeout cooldown ms |
+| `laneTtlMs` | `number` | `600000` | Warm-lane TTL (10 min) |
+| `laneMaxUses` | `number` | `4` | Max uses per warm lane |
+| `stateDir` | `string` | `<memory-dir>/swarm-state` | Runtime state directory |
+
+Runtime state files live under `stateDir` (stats, provider health, lanes, capsules,
+telemetry, history, trust, policy, run manifests, checkpoints). Memory, relay, and
+roles files live alongside (configurable via `memoryPath`, `relayPath`, `rolesPath`).
+
+---
+
 ## Testing
 
 Canonical test command:
@@ -377,8 +436,8 @@ Canonical test command:
 bun run test
 ```
 
-**Warning:** plain `bun test` does NOT execute the complete custom suite. Always use
-`bun run test`.
+> **Warning:** plain `bun test` does NOT execute the complete custom suite. Always use
+> `bun run test`.
 
 Typecheck (must exit 0):
 
@@ -441,9 +500,7 @@ docs/
 New scheduler behavior must include tests. Benchmark claims must carry evidence
 (methodology, timing definitions, raw vs corrected figures).
 
----
-
-## Benchmark Reproducibility
+### Benchmark reproducibility
 
 Benchmark assets under `benchmark/`:
 
@@ -459,16 +516,27 @@ by `.gitignore`.
 
 ---
 
+## Documentation
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime components, data flow, failure/recovery
+- [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) — methodology, raw vs corrected numbers, outage disclosure
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) — configuration reference
+- [`CHANGELOG.md`](CHANGELOG.md) — full version history
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — development workflow and standards
+- [`SECURITY.md`](SECURITY.md) — vulnerability reporting and key handling
+
+---
+
 ## License
 
 MIT License. Copyright (c) 2026 Arihant Bharanidhran
-<arihantbharani@outlook.com>. See `LICENSE`.
+<arihantbharani@outlook.com>. See [`LICENSE`](LICENSE).
 
 ---
 
 ## Contributing
 
-See `CONTRIBUTING.md`. Summary:
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Summary:
 
 - `bun install`, `bun run typecheck` (exit 0), `bun run test` (all green)
 - New scheduler behavior must include tests
@@ -479,7 +547,7 @@ See `CONTRIBUTING.md`. Summary:
 
 ## Security
 
-See `SECURITY.md`. Summary:
+See [`SECURITY.md`](SECURITY.md). Summary:
 
 - Users are responsible for their own provider API keys; keep keys local and
   environment-based; never commit keys
