@@ -1,7 +1,7 @@
 /**
  * Deterministic DAG scheduling: critical path, slack, waves, lane assignment.
  * Used for pipeline planning and straggler prioritization.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { DagNode, ScheduleNodeResult, ScheduleResult } from "./types.js"

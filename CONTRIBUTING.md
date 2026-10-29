@@ -69,7 +69,7 @@ benchmark/
 ## Code style
 
 - TypeScript strict mode, ESM (`"type": "module"`), NodeNext module resolution
-- MIT license; preserve existing attribution (`Arihant Bharanidhran`,
+- MIT license; preserve existing attribution (`Arihant Bharanidharan`,
   `<arihantbharani@outlook.com>`)
 - Keep runtime changes minimal and auditable — this is a benchmark-driven runtime, not
   a "spawn lots of bots" demo

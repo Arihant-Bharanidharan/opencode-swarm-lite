@@ -1,6 +1,6 @@
 /**
  * Provider specialization, quota groups, and circuit breakers.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { Category, ModelProfile, PortfolioReport, ProviderReliability, ProviderState, RouteChoice, RouteDecision, RouteRequest } from "./types.js"

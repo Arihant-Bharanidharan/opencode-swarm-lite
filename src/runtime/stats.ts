@@ -2,7 +2,7 @@
  * Learned cost model: provider/model/role/category/context/warm observations.
  * Priors are deliberately conservative; live observations replace them as they
  * accumulate. Nothing here calls a model or a provider.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { Category, Observation, ObservationStatus, TaskInput } from "./types.js"

@@ -21,7 +21,7 @@
  * carry the branch task text; the learning stores (history, trust) stay
  * task-text-free (Req 48). Telemetry events emitted here carry only
  * summaries (branchId, milestone, seconds, counts) - never file contents.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { Telemetry } from "./telemetry.js"

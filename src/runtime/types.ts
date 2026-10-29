@@ -1,6 +1,6 @@
 /**
  * Shared types for the adaptive swarm runtime.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 

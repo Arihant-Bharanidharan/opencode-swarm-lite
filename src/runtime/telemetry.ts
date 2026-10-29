@@ -8,7 +8,7 @@
  * (lostEvents) instead of silently swallowed; sequenceGaps() names the
  * sequence numbers the durable log lost; rebuildState() reconstructs lane
  * and checkpoint state from the log alone, deterministically.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { EffortReport, Plan } from "./types.js"

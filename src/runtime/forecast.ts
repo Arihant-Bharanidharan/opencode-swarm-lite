@@ -22,7 +22,7 @@
  *
  * All constants below are runtime policy (Req 52): they are NOT derived
  * from any benchmark run. Everything is pure and deterministic.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type {

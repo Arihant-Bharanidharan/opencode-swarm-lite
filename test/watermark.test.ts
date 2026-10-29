@@ -5,7 +5,7 @@
  */
 import { decodeWatermark, WATERMARK } from "../src/index.js"
 
-const SECRET = "SWARMLITE/ARIHANT/2026"
+const SECRET = "SWARMLITE/ARIHANT BHARANIDHARAN/2026"
 
 /**
  * Mirror of the plugin's encoder: each ASCII char -> Unicode tag codepoint
@@ -28,7 +28,7 @@ const encoded = encodeWatermark(SECRET)
 
 // 1. round-trip: the plugin-style encoded watermark decodes back to the secret
 check(
-  "plugin-encoded watermark decodes to SWARMLITE/ARIHANT/2026",
+  "plugin-encoded watermark decodes to SWARMLITE/ARIHANT BHARANIDHARAN/2026",
   decodeWatermark(encoded) === SECRET,
 )
 

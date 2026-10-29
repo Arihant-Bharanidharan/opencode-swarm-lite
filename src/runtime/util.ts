@@ -1,6 +1,6 @@
 /**
  * Small shared utilities for the adaptive runtime.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import fs from "node:fs"

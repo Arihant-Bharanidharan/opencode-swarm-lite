@@ -10,7 +10,7 @@
  *   overlap; totalRegret is their sum (an upper bound), not a physical quantity.
  * Req 52: agent-count sweeps derive from the plan's own alternatives and
  *   branch structure — never fixed magic counts like "6 agents, 2 waves".
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import { classifyShape } from "./history.js"

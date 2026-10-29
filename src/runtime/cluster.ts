@@ -3,7 +3,7 @@
  * concept normalizer plus token overlap, not an embedding. Consensus requires
  * independent evidence; paraphrases alone are not consensus, and genuine
  * dissent is kept rather than averaged away.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { ConvergenceResult, Finding, FindingCluster } from "./types.js"

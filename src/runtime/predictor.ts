@@ -12,7 +12,7 @@
  * The interface itself lives in types.ts so it can be referenced from `Plan`
  * without a circular import; this module is the derivation and the validator.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { Plan, PlanPredictors } from "./types.js"

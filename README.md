@@ -529,7 +529,7 @@ by `.gitignore`.
 
 ## License
 
-MIT License. Copyright (c) 2026 Arihant Bharanidhran
+MIT License. Copyright (c) 2026 Arihant Bharanidharan
 <arihantbharani@outlook.com>. See [`LICENSE`](LICENSE).
 
 ---

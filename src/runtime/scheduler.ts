@@ -3,7 +3,7 @@
  * cheapest plan that clears the speedup bar, and explain why. Serial is the
  * default; fan-out has to pay for planning, startup, congestion and integration.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type {

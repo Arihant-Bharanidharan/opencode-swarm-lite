@@ -16,7 +16,7 @@
  * Req 48: observations are metric fields only; record() whitelists keys so
  *   learning data physically cannot carry task text or secrets.
  * Req 49: versioned store; an unknown schema version resets to a fresh start.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type {

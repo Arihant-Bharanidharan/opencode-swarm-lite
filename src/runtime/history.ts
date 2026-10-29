@@ -6,7 +6,7 @@
  *   prompt or source content.
  * Req 49: versioned store; an unknown schema version resets to a fresh start
  *   instead of crashing or misreading old data.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type {

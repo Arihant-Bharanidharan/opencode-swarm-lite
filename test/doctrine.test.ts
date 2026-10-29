@@ -105,7 +105,7 @@ check(
 check("adaptive: memory path embedded", adaptive.includes("/mem/swarm-memory.md"))
 check("adaptive: wave size embedded", /Wave size = ~8 lanes/.test(adaptive))
 check("adaptive: rate-limit ON text", /token-bucket limited \(burst 8\)/.test(adaptive))
-check("adaptive: attribution (copyright) attached", adaptive.includes("(c) 2026 Arihant Bharanidhran"))
+check("adaptive: attribution (copyright) attached", adaptive.includes("(c) 2026 Arihant Bharanidharan"))
 
 // ---- 7. skillContent — MANUAL mode keeps user-decides + still gets doctrine ----
 const manual = skillContent("manual", "/mem/swarm-memory.md", 8, false, 0, "/mem/swarm-relay.md")

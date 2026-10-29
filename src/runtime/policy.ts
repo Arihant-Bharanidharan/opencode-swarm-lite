@@ -12,7 +12,7 @@
  *   promoted version; version 1 (base defaults) is the immovable floor.
  * Req 22/50: manual override hard-wins over the learned policy every time; resolve()
  *   reports source, forced values, and disabled subsystems for explainability.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type {

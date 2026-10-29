@@ -2,7 +2,7 @@
  * Explainability: every significant scheduler decision records its reasons.
  * Req 51: tools surface "DECISION: ... reason: ..." blocks, never bare
  * verdicts — a decision without reasons is a bug.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { DecisionRecord } from "./types.js"

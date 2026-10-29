@@ -13,7 +13,7 @@
  *   overlapping the dominant claim but not merged: a genuine dissent worth
  *   human review) or redundant_dissent (no topical overlap: kept visible, but
  *   it adds no evidence to THIS debate). Nothing is ever silently dropped.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import { clusterFindings, findingSimilarity } from "./cluster.js"

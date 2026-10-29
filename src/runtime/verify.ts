@@ -2,7 +2,7 @@
  * Adaptive verification policy V0-V4. The policy starts at the cheapest level
  * that fits the evidence and escalates only on disagreement, low confidence,
  * weak tests or risk. A judge is one optional step, never the default.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { VerificationInput, VerificationLevel, VerificationPlan } from "./types.js"

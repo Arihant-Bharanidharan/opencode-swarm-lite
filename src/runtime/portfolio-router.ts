@@ -7,7 +7,7 @@
  * (TrustStore) and reliability score (ProviderHealth) so traffic drifts
  * away from flaky providers toward trustworthy ones.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { PortfolioReport, ProviderReliability, RouteChoice, RouteDecision, RouteRequest, SkillCategory } from "./types.js"

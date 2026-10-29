@@ -11,7 +11,7 @@
  * Statuses: RUNNING | RECOVERING | COMPLETE | FAILED | CANCELLED.
  * Completion is never claimed before the required state is durable.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import fs from "node:fs"

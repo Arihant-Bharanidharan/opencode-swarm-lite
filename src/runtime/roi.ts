@@ -10,7 +10,7 @@
  * ROI units: value points per 100 cost-seconds, so thresholds are readable
  * (~1.0 = excellent, <0.5 = a dip, <0.15 = cancel-eligible once hysteresis
  * clears).
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { BranchRoi, BranchRoiInput, PriorityAction } from "./types.js"

@@ -23,7 +23,7 @@
  * Pure and deterministic: the same changes always produce the same plan
  * (branch ids are sorted before any pairwise work, conflicts are emitted
  * in sorted pair order, and tie-breaks are lexicographic).
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { BranchChange, IntegrationConflict, IntegrationPlan } from "./types.js"

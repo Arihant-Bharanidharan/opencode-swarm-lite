@@ -2,7 +2,7 @@
  * Warm lane pool. Sessions are reused only when role, model, category and
  * capsule scope all match; anything else is a cold lane. No context is
  * silently transplanted across scopes.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { Category, LaneRecord } from "./types.js"

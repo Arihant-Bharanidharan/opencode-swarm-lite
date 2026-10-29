@@ -7,7 +7,7 @@
  * no duplicate commits, no lost provenance, no excessive retries, no
  * workspace corruption, no orphan workers, no incorrect passes.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 

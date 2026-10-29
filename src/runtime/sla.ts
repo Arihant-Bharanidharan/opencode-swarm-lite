@@ -15,7 +15,7 @@
  *   run never regresses to an earlier stage -- and a cost guard declines a
  *   swarm whose verification/effort cannot be repaid by predicted savings.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type { AdaptiveScheduler } from "./scheduler.js"

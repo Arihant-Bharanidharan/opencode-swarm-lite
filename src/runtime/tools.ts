@@ -4,7 +4,7 @@
  * status and replay. They do not spawn lanes themselves; the parent model still
  * has exactly one orchestration loop and calls `subagent` for actual work.
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import type {

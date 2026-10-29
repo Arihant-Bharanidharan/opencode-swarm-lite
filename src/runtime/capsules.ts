@@ -1,7 +1,7 @@
 /**
  * Versioned context capsules: verified facts, hypotheses and stale notes with
  * provenance. Capsules are explicit handoffs, not shared mutable memory.
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  */
 import fs from "node:fs"

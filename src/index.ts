@@ -1,7 +1,7 @@
 /**
  * opencode-swarm-lite — lightweight multi-agent orchestration for OpenCode
  *
- * Copyright (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com>
+ * Copyright (c) 2026 Arihant Bharanidharan <arihantbharani@outlook.com>
  * SPDX-License-Identifier: MIT
  *
  * Features:
@@ -114,17 +114,17 @@ const sanitizeError = (error: unknown): string => {
   return message.length > 500 ? `${message.slice(0, 500)}...` : message
 }
 
-const AUTHOR = "Arihant Bharanidhran"
+const AUTHOR = "Arihant Bharanidharan"
 const EMAIL = "arihantbharani@outlook.com"
 const VERSION = "2.0.0"
 
 /**
- * Secret watermark: encodes "SWARMLITE/ARIHANT/2026" as Unicode tag characters
- * (U+E0020–U+E007F). Invisible in rendered text; recoverable by decoding the
- * tag-codepoint run back to ASCII.
+ * Secret watermark: encodes "SWARMLITE/ARIHANT BHARANIDHARAN/2026" as Unicode
+ * tag characters (U+E0020–U+E007F). Invisible in rendered text; recoverable by
+ * decoding the tag-codepoint run back to ASCII.
  */
 export const WATERMARK: string = (() => {
-  const secret = "SWARMLITE/ARIHANT/2026"
+  const secret = "SWARMLITE/ARIHANT BHARANIDHARAN/2026"
   return Array.from(secret)
     .map((ch) => String.fromCodePoint(0xe0000 + ch.charCodeAt(0)))
     .join("")
