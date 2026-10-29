@@ -1,18 +1,237 @@
 # opencode-swarm-lite
 
-<!-- opencode-swarm-lite v1.4.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+> **An adaptive execution runtime that knows when to swarm — and when not to.**
 
-Lightweight multi-agent orchestration for [OpenCode](https://opencode.ai). Parallel subagent lanes with **adaptive or manual swarm shapes**, a **lane doctrine** (working rules, not permission rails), **lane-to-lane relay communication**, **specialist role briefs** backed by an **extensible role registry** (add, modify, or broaden roles at runtime), **refine/reiterate quality loops**, **multimodal analyst workers**, **dispatch rate limiting**, **auto-compaction**, and a shared markdown memory. No gates, no receipts, no enforced reviews.
+`opencode-swarm-lite` is an adaptive multi-model agent orchestration runtime for
+[OpenCode](https://opencode.ai). It predicts whether parallel agents are worth
+spawning, chooses different execution strategies across task subgraphs, routes work
+according to model/provider health and trust, adapts verification effort, and can
+recover checkpointed swarm runs after coordinator failure.
 
-Built as a deliberately thin alternative to heavyweight swarm plugins: everything is a plain prompt contract or a small, inspectable mechanism.
+**The goal is not for the swarm to always win. The goal is for the scheduler to know
+when the swarm will win.** Serial execution is the default; fan-out must clear a
+measured speedup bar before any worker is spawned.
 
-## Install
+## Why it exists
 
-The package is **not published to npm** yet (`opencode plugin add opencode-swarm-lite`
-returns a 404), so install it from a local checkout.
+Naive agent swarms often waste time: startup, coordination, and verification overhead
+can exceed the useful work being parallelized. `opencode-swarm-lite` runs a cost model
+before dispatching, so small or tightly coupled tasks stay serial while large,
+independent workloads get batched, speculative, or full-swarm execution.
+
+The runtime is benchmark-driven, not a "spawn lots of bots" demo. It publishes measured
+speedups — including a case where swarm *lost* on small work — and uses those results to
+drive its cost-aware decisions.
+
+---
+
+## Architecture
+
+```
+                    Parent Coordinator
+                           │
+                    Cost / Policy Engine
+                           │
+                    Task DAG Planner
+                           │
+        ┌──────────────────┼───────────────────┐
+        │                  │                   │
+      SERIAL             BATCHED_WORKER      PIPELINE
+        │                  │                   │
+        └───────────┬──────┴────────────┬──────┘
+                    │                   │
+              SPECULATIVE          FULL_SWARM / SMALL_SWARM
+                    │                   │
+                    └─────────┬─────────┘
+                              │
+                    Provider Portfolio Router
+                              │
+              ┌───────────────┼───────────────┐
+              │               │               │
+           Model A         Model B         Model C
+                              │
+                    Trust / Reliability Layer
+                              │
+                    Checkpoints & Run Manifests
+                              │
+        Durable Events · Selective Rollback · Crash Recovery
+```
+
+There is **one parent**. The parent model remains the only orchestration loop and is
+the only entity that calls `subagent`. Scheduler tools (`swarm_plan`, `swarm_route`,
+`swarm_capsule`, `swarm_lane`, `swarm_record`, `swarm_verify`, etc.) are advisory —
+they never spawn agents.
+
+Data flow:
+
+1. **Task input** arrives with shape hints (branches, branchSeconds, independence,
+   sharedContext, ambiguity, risk, verificationValue, deadline, SLA mode).
+2. **Cost / policy engine** (`AdaptiveScheduler`) estimates serial vs every swarm shape,
+   applies SLA and deadline pressure, and runs the cost guard.
+3. **Task DAG planner** builds waves/batches and a critical-path schedule when edges are
+   present (PIPELINE).
+4. **Provider portfolio router** picks model/provider per lane using health, trust, and
+   reliability scores; blocked providers are excluded.
+5. **Execution** dispatches lanes in waves (token-bucket rate limited), with warm-lane
+   reuse, straggler detection, and hedging.
+6. **Verification** runs adaptively (V0–V4) and the refine loop converges on quality.
+7. **Recovery**: run manifests, checkpoints, and the coordinator resume/restart on
+   crashes; selective rollback to prior snapshots.
+
+---
+
+## Core Features
+
+### Adaptive Planning
+
+- Serial vs swarm prediction — cost model decides topology before any spawn
+- Nine-field snake_case predictor contract (see Predictor Contract)
+- Mixed-strategy subgraph planning (BATCH / PIPELINE / SPECULATIVE_SWARM / FULL_SWARM
+  in one workload)
+- Speculative fan-out with early branch termination
+- Task batching (BATCHED_WORKER: one worker per batch, never one agent per microtask)
+- Critical-path scheduling (PIPELINE DAG)
+- ROI cancellation with hysteresis
+- Information-gain scheduling
+
+### Runtime Execution
+
+- Specialist subagent lanes: architect, builder, verifier, coder, researcher, reviewer,
+  multimodal analyst
+- Extensible role registry (add / modify / broaden roles at runtime)
+- Work stealing and warm-lane reuse
+- Deadline pressure and anytime stages (PRELIMINARY → VERIFIED → FINAL)
+- Straggler detection and hedging
+- Token-bucket dispatch rate limiting (default 4/s, burst 8)
+
+### Multi-Model / Provider Routing
+
+> **Multi-model means routing subagent work across different LLM models/providers.
+> It does not mean image/audio multimodality.**
+
+- Provider reliability tracking with circuit breaker (closed / open / half_open)
+- Portfolio routing with trust-aware specialization
+- Degrade / reallocate feedback loop (`recordDegradation`, `feedback()`)
+- Rate-limit-aware behavior; provider limits are respected — no quota bypassing
+- Recommended models published per plan (`recommended_models`)
+
+### Verification
+
+- Adaptive verification (V0 self-check → V4 adversarial verifier)
+- Confidence calibration and trust scoring
+- Diversity-aware consensus with minority verdict preservation
+- Deterministic verification preference; provenance tracking
+
+### Resilience
+
+- Durable event log and run manifests with idempotent opId dedupe
+- Checkpoints, snapshots, and selective rollback
+- Coordinator crash recovery (resume / restart decisions, forced provider restoration)
+- Idempotent replay of completed runs
+
+### Learning / Policy
+
+- Historical runtime signals and shape baselines
+- Self-tuning policy with promotion / rollback gates
+- Shadow policy and manual override
+- SLA modes: FASTEST, CHEAPEST, HIGHEST_QUALITY, BALANCED, LOWEST_PROVIDER_RISK
+
+### Observability
+
+- Scheduler dashboard, provider health dashboard, calibration dashboard
+- Waste breakdown and multi-dimensional grading
+- Telemetry and replay
+
+---
+
+## Benchmarks
+
+All benchmark figures come from the published fixture under `benchmark/`
+(`SPEC.md`, `workspace/`, `tests/`). See `docs/BENCHMARKS.md` for full methodology.
+
+### Positive swarm benchmark
+
+**5-task clean parallel subset** — no outage correction needed:
+
+| Metric | Serial | Adaptive swarm |
+|---|---|---|
+| Wall time | 68.07 min | 13.67 min |
+| Speedup | — | **4.98×** |
+| Parallel efficiency | — | 86.1% |
+| Correctness | identical | identical |
+
+This clean subset is the strongest headline benchmark because it required no outage
+correction.
+
+**8-task whole workload** — disclosed outage correction:
+
+| Metric | Serial Σ | Corrected swarm wall |
+|---|---|---|
+| Wall time | 155.02 min | 57.78 min |
+| Speedup | — | **2.68×** (predicted 1.66×) |
+| Correctness | 8/8 | 8/8 |
+
+The whole-arm run contained an overnight server outage. The raw swarm wall time was
+**658.3 min**; the corrected figure excludes that disclosed shared outage. Do not treat
+2.68× as raw wall-clock performance.
+
+### Negative benchmark
+
+**Small-task benchmark** — short ~30 s tasks performed worse under swarm execution:
+
+| Metric | Serial | Swarm answers | Swarm completion |
+|---|---|---|---|
+| Time | ~293 s | ~439 s | ~589 s |
+
+Startup and orchestration overhead dominated the useful work. This failure motivated
+the cost predictor and adaptive scheduler — serial is the default for a reason.
+
+---
+
+## Adaptive decision example
+
+**Task: small symbolic integral**
+
+```
+Predictor:
+estimated_serial_time: low
+branch_independence: near zero
+recommended_topology: SERIAL
+recommended_agent_count: 1
+
+Result: parent solved directly; no subagents spawned
+```
+
+**Task: 8 independent defects**
+
+```
+Predictor:
+recommended_topology: FULL_SWARM
+recommended_agent_count: 6
+recommended_waves: 2
+
+Observed: 2.68× whole-arm corrected speedup; 4.98× clean parallel subset
+```
+
+---
+
+## Installation
+
+The package is **not published to npm** (`opencode plugin add opencode-swarm-lite`
+returns a 404). Install from a local checkout:
+
+```bash
+git clone https://github.com/Arihant-Bharanidharan/opencode-swarm-lite.git
+cd opencode-swarm-lite
+bun install
+bun run typecheck
+bun run test
+```
+
+Then reference it in your OpenCode config (`~/.config/opencode/opencode.json` or a
+project `opencode.json`):
 
 ```jsonc
-// ~/.config/opencode/opencode.json  (or a project opencode.json)
 {
   "plugins": [
     {
@@ -30,301 +249,232 @@ returns a 404), so install it from a local checkout.
 }
 ```
 
-## How it works
+This repository is the plugin source; there is no separate npm publish step.
 
-### Modes
+---
 
-| Mode | Swarm shape |
-| --- | --- |
-| `adaptive` (default) | The orchestrator derives the lane count and hierarchy from the work itself. The skill carries a lane rubric (1 lane for a single focused task, 2-3 for two or three workstreams, 4-6 for four to six, 7+ only for genuinely parallel large efforts) plus an explicit anti-default guarantee: **there is no fixed lane count, and the orchestrator is told to never say "I'll use the default N lanes."** A per-task word-count hint (`laneHint`) is embedded in every `/swarm` expansion so the shape tracks the prompt size, not a constant. |
-| `manual` | You decide. The orchestrator confirms the subagent count and hierarchy with you before dispatching (unless you already stated them). |
+## Configuration
 
-### Dispatch behavior
-
-Lanes dispatch in **waves through one assistant message** containing multiple `task`
-tool calls (rate-limit aware: token bucket, default 4/s with burst 8). Every lane brief is
-built from a template that now includes, in order:
-
-1. The **lane doctrine** — seven working rules that keep parallel lanes coherent:
-   evidence over assertion, scope fence, read-before-write, one-truth-per-fact,
-   fail-loudly-early, a deterministic finish (`STATUS | FINDINGS | HANDOFFS`), and
-   no self-promotion.
-2. A **specialist role brief** — architect, builder, verifier, coder, researcher,
-   reviewer, or multimodal analyst — or any custom/broadened role from the registry
-   (see below).
-3. The task-specific instructions from the orchestrator.
-4. The **relay protocol** — how to read and append to the shared relay file.
-
-Multimodal lanes are tagged (analyst role brief + media path requirements), and
-dispatch is throttled through a token bucket with a clear error message on rejection.
-
-### Lane doctrine
-
-Doctrine is a **prompt contract, not a permission system** — it does not gate, block,
-or receipt anything. It exists because parallel lanes doing redundant or contradictory
-work is the main source of swarm errors. The seven rules:
-
-1. **Evidence over assertion.** Every claim carries file:line, command output, or an
-   explicit "I could not verify X".
-2. **Scope fence.** A lane does exactly its brief; out-of-scope discoveries become
-   relay handoffs, not side quests.
-3. **Read before write.** Read the relay and any file you will touch before touching it.
-4. **One truth per fact.** Cite relay-verified facts instead of re-deriving them.
-5. **Fail loudly, early.** Surface blockers in the relay immediately.
-6. **Deterministic finish.** Every lane ends with `STATUS | FINDINGS | HANDOFFS`.
-7. **No self-promotion.** Reports describe the work, not how well the work was done.
-
-### Lane-to-lane communication (relay file)
-
-Lanes coordinate through an append-only markdown relay file (default
-`<memory-dir>/swarm-relay.md`, configurable via `relayPath`). Subagents cannot message
-each other directly; the relay is the only channel between them. It carries findings,
-FINDINGS blocks from finished lanes, and `HANDOFF -> lane-ID: description` notes for
-work that crosses lane boundaries. The orchestrator reads it back at integration time,
-so work a lane discovered outside its scope gets routed instead of dropped.
-
-### Extensible role registry (add / modify / broaden)
-
-The seven built-in roles are a starting point, not a ceiling. The agent reshapes the
-roster at runtime through an **append-only role registry** file
-(`<memory-dir>/swarm-roles.md` by default, configurable via `rolesPath`):
-
-- `### role: <slug>` **adds** a role; on an existing slug (built-in or custom) it
-  **replaces** that brief — that is how you *modify* a role. Last block wins.
-- `### extend: <slug>` **broadens** an existing role by appending guidance. Multiple
-  `extend:` blocks accumulate in file order, and broadening a base propagates to every
-  role that `extends:` it.
-- `- extends: <base>` on a role block makes a custom role inherit a base (built-in or
-  another custom); cycles resolve to the role's own body instead of hanging.
-
-Registry blocks are short (<=8 lines) and end at the next heading. The file is
-re-read automatically whenever it changes — through `write`/`edit`/`patch`, a shell
-append (checked on the next context build), or `/swarm-roles` — and the swarm skill
-re-renders in place: no restart, no service reload. A registry block is additive: it
-never replaces the lane doctrine, the relay protocol, or the refine loop, and ONE
-role per lane still applies. Browse the roster with `/swarm-roles`; reshape it with
-`/swarm-roles <request>` (the agent edits the file for you) or by editing the file
-directly — custom roles render as `### <Title> lane (custom)`, modified built-ins get
-`(modified)`.
-
-### Refine / reiterate loop
-
-After integrating, the orchestrator runs a bounded quality loop (default 1 pass,
-`refinePasses` 0-3):
-
-1. **Draft** — the integrated result.
-2. **Critique** — a fresh verifier lane attacks it (claims vs evidence, gaps, contradictions).
-3. **Fix** — a fix lane addresses valid critique points.
-4. **Re-verify** — the fixed result is re-checked.
-
-The loop **stops early the moment a critique finds zero issues** — convergence, not
-fixed iteration count. `refinePasses: 0` disables it (single pass, no critique).
-
-### Memory & auto-compaction
-
-All lanes and the orchestrator share one markdown memory file
-(`~/.config/opencode/swarm-memory.md` by default), seeded with a header, an attribution
-comment, and a hidden watermark on first run. After every 40th message (configurable)
-the orchestrator is instructed to distill the session into the memory file — recent
-lessons first, stale ones pruned — then continue, with a cooldown to prevent
-back-to-back compactions.
-
-## Commands
-
-| Command | What it does |
-| --- | --- |
-| `/swarm <task>` | Loads the `swarm` skill and dispatches the task to parallel subagent lanes in one message: adaptive shape guidance (with per-task lane rubric + word-count hint) or manual confirmation, lane doctrine, specialist role briefs (built-in roster or registry-defined), relay file coordination, and the refine loop before reporting done. |
-| `/swarm-mode` | Toggle between `adaptive` and `manual`. Persists in `swarm-state.json`. |
-| `/swarm-status` | One-shot status report: mode, dispatch budget (burst/rate/tokens), wave size, refine passes, role roster (built-in + registry), registry/relay paths, auto-compaction settings, memory file. |
-| `/swarm-roles [request]` | No text: prints the exact role listing (built-ins + registry roles with modified/broadened markers). With text: has the agent add, modify, or broaden roles in the registry for your request — no lanes dispatched. |
-
-Slash commands work in the TUI (and via the `POST /api/session/{id}/command` HTTP
-endpoint). Note: `opencode run "/cmd"` does **not** resolve slash commands — that is an
-OpenCode CLI behavior, not a plugin bug.
-
-## Options
+Documented options (all read from `opencode.json` plugin options):
 
 | Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `mode` | `"adaptive" \| "manual"` | `"adaptive"` | Swarm shape policy. |
-| `ratePerSecond` | `number` | `4` | Sustained dispatches/sec. |
-| `burst` | `number` | `8` | Immediate dispatches before throttling. |
-| `rateLimit` | `boolean` | `true` | Master switch for rate limiting. |
-| `waveSize` | `number` | `8` | Lanes per dispatch message. |
-| `refinePasses` | `number` | `1` | Refine-loop passes after integration (0 disables, max 3). |
-| `relayPath` | `string` | `<memory-dir>/swarm-relay.md` | Append-only lane-to-lane relay file. |
-| `rolesPath` | `string` | `<memory-dir>/swarm-roles.md` | Role registry file: `### role:` adds/modifies, `### extend:` broadens; hot-reloaded into the skill. |
-| `memoryPath` | `string` | `~/.config/opencode/swarm-memory.md` | Shared memory file. |
-| `compactThreshold` | `number` | `40` | Messages before a compaction prompt. |
-| `compactCooldownMs` | `number` | `30000` | Minimum ms between compactions. |
+|---|---|---|---|
+| `mode` | `"adaptive" \| "manual"` | `"adaptive"` | Swarm shape policy |
+| `ratePerSecond` | `number` | `4` | Sustained subagent dispatches/sec |
+| `burst` | `number` | `8` | Immediate dispatches before throttling |
+| `rateLimitEnabled` | `boolean` | `true` | Master switch for rate limiting |
+| `refinePasses` | `number` (0–3) | `1` | Refine-loop passes after integration |
+| `compactThreshold` | `number` | `40` | Messages before compaction prompt |
+| `compactCooldownMs` | `number` | `30000` | Minimum ms between compactions |
+| `swarmMaxAgents` / `maxAgents` | `number` | `8` | Max concurrent lanes |
+| `maxTasksPerBatch` | `number` | `6` | Max tasks per batched worker |
+| `qualityWeight` | `number` (0–1) | `0.25` | Quality vs speed weight |
+| `judgeAvailable` | `boolean` | `true` | Whether an LLM judge may be used |
+| `judgeCostSeconds` | `number` | `45` | Estimated judge cost in seconds |
+| `minSpeedupSwarm` | `number` | `1.08` | Min speedup for swarm over serial |
+| `minSpeedupBatch` | `number` | `1.03` | Min speedup for batch over serial |
+| `minSavingsSeconds` | `number` | `5` | Min seconds saved to justify fan-out |
+| `providerFailureThreshold` | `number` | `3` | Failures before circuit opens |
+| `providerCooldownMs` | `number` | `60000` | Circuit cooldown ms |
+| `providerTimeoutThreshold` | `number` | `2` | Timeouts before circuit opens |
+| `providerTimeoutCooldownMs` | `number` | `45000` | Timeout cooldown ms |
+| `laneTtlMs` | `number` | `600000` | Warm-lane TTL (10 min) |
+| `laneMaxUses` | `number` | `4` | Max uses per warm lane |
+| `stateDir` | `string` | `<memory-dir>/swarm-state` | Runtime state directory |
 
-## Skill output (what the orchestrator receives)
+Runtime state files live under `stateDir` (stats, provider health, lanes, capsules,
+telemetry, history, trust, policy, run manifests, checkpoints). Memory, relay, and
+roles files live alongside (configurable via `memoryPath`, `relayPath`, `rolesPath`).
 
-```markdown
-# Swarm orchestration
+---
 
-<!-- opencode-swarm-lite v1.4.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+## Example Usage
 
-## Mode: ADAPTIVE (default: adaptive)
+### Example 1 — Adaptive (default)
 
-You choose the lane count and hierarchy that fit the task and justify the shape.
-Never say "I'll use the default N lanes." — there is no default count; there is only
-the work. Rubric: 1 lane for a single focused task; 2-3 for two or three workstreams;
-4-6 for four to six; 7+ only for genuinely parallel large efforts. Split by workstream,
-never by number. (This task hints ~N words -> about M independent lanes; a hint, not a
-mandate.)
+The coordinator chooses the topology from the work itself:
 
-## Lane doctrine (follow always; these are working rules, not permissions)
-
-1. **Evidence over assertion.** ...
-...(seven rules; each lane brief repeats them)...
-
-## Lane-to-lane communication (relay file)
-
-Lanes coordinate through `<memory-dir>/swarm-relay.md` — an append-only relay, the only
-channel between lanes. Read first, write second; append findings/handoffs, never edit.
-
-## Workflow
-
-1. **Memory + registry** — read the memory file and `swarm-roles.md` (registry roles).
-2. Decompose the task into INDEPENDENT lanes...
-3. Dispatch lanes in parallel — every lane brief gets the doctrine + a built-in or
-   registry role.
-4. **Relay** — read the relay file top-to-bottom at integration time; route HANDOFFs.
-5. Integrate results...
-6. **Refine** — draft -> verifier critique -> fix -> re-verify; stop early on convergence.
-7. Review (only when asked or high-risk)...
-8. Append short lessons to memory...
-
-## Specialist roles (attach exactly one to every lane brief)
-
-### Architect lane / Builder lane / Verifier lane
-### Coder lane / Researcher lane / Reviewer lane / Multimodal analyst lane
-### <Custom> lane (custom) / <Built-in> lane (modified)   <- registry outcomes
-
-...(one-line role contract each; multimodal requires media paths)...
-
-### Role registry - add, modify, or broaden roles yourself
-
-Registry file: `<memory-dir>/swarm-roles.md` (append-only markdown, same discipline as
-the relay). `### role: <slug>` adds or replaces (modify); `### extend: <slug>` appends
-(broaden); optional `- extends: <base>` inherits a base. Last block wins; accumulation
-is file order; ONE role per lane and the lane doctrine always apply. The skill
-re-renders automatically when the registry changes.
-
-## Dispatch mechanics
-
-Dispatch every lane in ONE message... ~8 lanes per message, token-bucket limited
-(burst 8)...
-
-## Memory & auto-compaction
-
-Shared memory file: `<memory-dir>/swarm-memory.md`. After every 40th message, distill...
-
-## Refine passes
-
-1 pass (draft -> critique -> fix -> re-verify; stop early on convergence).
+```text
+/swarm "Refactor the authentication module across three files and add unit tests"
 ```
 
-## Memory file (seeded on first run)
+The scheduler estimates serial vs swarm, picks a topology (e.g. SMALL_SWARM with 3
+lanes), dispatches in one message, and runs the refine loop before reporting done.
 
-```markdown
-# Swarm memory
+### Example 2 — Manual
 
-<!-- opencode-swarm-lite v1.4.0 | (c) 2026 Arihant Bharanidhran <arihantbharani@outlook.com> -->
+The user explicitly chooses agent count and hierarchy:
 
-<hidden zero-width watermark>
-
-Shared lessons across swarm runs. Append short bullets, prune stale entries, keep this
-under ~300 lines. Structure: `## Durable` (carry forward) and `## Recent` (prune).
+```text
+/swarm-mode manual
+/swarm "Fix the off-by-one in t6-business-days.ts"  → confirm 1 lane, serial
 ```
 
-## Verification
+No lanes are dispatched without user approval in manual mode.
+
+### Example 3 — Mixed strategy
+
+One workload containing multiple subgraphs:
+
+```text
+BATCH        → batched microtasks, one worker per batch
+PIPELINE     → DAG stages in waves, no node starts before its edges finish
+SPECULATIVE_SWARM → scouts only, expand on real uncertainty, stop redundant branches
+FULL_SWARM   → up to `agents` lanes in `waves`
+```
+
+The mixed-strategy scheduler applies SLA modes, deadline pressure, anytime stages
+(PRELIMINARY → VERIFIED → FINAL), and ROI cancellation across the subgraphs.
+
+---
+
+## Predictor Contract
+
+Every `swarm_plan` returns nine published fields in snake_case. These are the external
+contract — do not rename them in integrations or documentation.
+
+| Field | Meaning |
+|---|---|
+| `estimated_serial_time` | Predicted wall clock if one agent does everything sequentially (seconds) |
+| `estimated_swarm_time` | Predicted wall clock of the best non-serial candidate (seconds) |
+| `estimated_parallel_efficiency` | serial / chosen, divided by agents; 1 when SERIAL |
+| `estimated_startup_cost` | Startup (cold or warm) for the chosen plan (seconds) |
+| `estimated_verification_gain` | Expected correctness gain from the chosen verification ladder |
+| `recommended_topology` | `SERIAL` \| `SMALL_SWARM` \| `FULL_SWARM` \| `SPECULATIVE_SWARM` \| `PIPELINE` \| `BATCHED_WORKER` |
+| `recommended_agent_count` | Recommended lane count for the chosen topology |
+| `recommended_models` | Recommended provider/model per lane (`string[]`) |
+| `confidence` | Scheduler confidence in the chosen plan (0.2–0.95) |
+
+---
+
+## Supported Topologies
+
+| Topology | Behavior |
+|---|---|
+| `SERIAL` | Do the work yourself; spawn nothing |
+| `SMALL_SWARM` | At most `agents` lanes in `waves` |
+| `FULL_SWARM` | Up to `agents` lanes in `waves` for large parallel efforts |
+| `SPECULATIVE_SWARM` | Spawn planned scouts only; merge via `swarm_converge`; expand on real uncertainty |
+| `PIPELINE` | Dispatch DAG stages in waves; never start a node before its edges finish |
+| `BATCHED_WORKER` | Spawn exactly `agents` workers; one `batches[i]` per worker |
+
+Do not use `"SWARM"` — it is not a real topology.
+
+---
+
+## Testing
+
+Canonical test command:
 
 ```bash
-bun run typecheck   # tsc --noEmit
-bun run test        # runs every test/**/*.test.ts file
+bun run test
 ```
 
-176 checks across four suites, all hand-checked against the source:
+**Warning:** plain `bun test` does NOT execute the complete custom suite. Always use
+`bun run test`.
 
-- `test/doctrine.test.ts` (65) — doctrine rule coverage, relay protocol invariants,
-  refine-loop rendering (0/1/2/3 passes), adaptive lane rubric + laneHint scaling
-  (tiny vs mid vs huge prompts hint different lane counts — the anti-hardcode proof),
-  specialist roster completeness, and skillContent rendering for both modes.
-- `test/rate-limit.test.ts` (28) — burst, recovery, rejection message.
-- `test/roles.test.ts` (69) — registry parse rules, resolution (add/modify/broaden,
-  extends chains, cycle safety, last-block-wins), section rendering, the
-  `/swarm-roles` listing, skill integration, and 6-arg backward compatibility.
-- `test/watermark.test.ts` (14) — decode, placement, attribution comment.
+Typecheck (must exit 0):
 
-Layout:
-
-```
-opencode-swarm-lite/
-  src/
-    index.ts            # plugin: doctrine, relay, refine loop, role registry, lanes, rate limit, compaction
-  test/
-    doctrine.test.ts    # 65 checks: doctrine/relay/refine/rubric/roles/skillContent
-    rate-limit.test.ts  # 28 checks: burst/recovery/reject
-    roles.test.ts       # 69 checks: registry parse/resolve/render/listing/back-compat
-    watermark.test.ts   # 14 checks: secret watermark
-  package.json
-  README.md
+```bash
+bun run typecheck
 ```
 
-## Design notes
+### Verified status
 
-- **Doctrine over permissions.** v1.3.0 adds working rules for lanes, not permission
-  rails: nothing is gated, blocked, or receipted. Doctrine reduces errors (contradictory
-  or redundant parallel work) while keeping the plugin thin.
-- **Adaptive means adaptive.** The lane count is derived from the task's workstreams via
-  an embedded rubric plus a per-prompt word-count hint, with an explicit instruction to
-  never claim a "default" count. Tests assert the hint scales with prompt size.
-- **Quality loops.** The refine loop is a bounded prompt contract (draft -> critique ->
-  fix -> re-verify, early stop on convergence), not a fixed iteration tax.
-- **Everything is prompt text or a small mechanism.** The doctrine, relay protocol,
-  role briefs, and refine loop are plain markdown in the skill/`task` payloads.
-  The only executable machinery remains the token-bucket rate limiter, state persistence,
-  and the compaction timer. v1.4.0's role registry stays inside this rule: the registry
-  is markdown and the refresh is a stat check + skill re-render.
-- **Extensible roster, fixed doctrine.** The agent can add, modify, and broaden
-  specialist roles at runtime (append-only registry file, hot-reloaded into the skill),
-  while the lane doctrine, relay protocol, refine loop, and one-role-per-lane rule stay
-  fixed contracts. Specialization is open; the safety properties are not editable.
+```text
+19 suites
+991 checks
+991 passed
+0 failures
+typecheck: exit 0
+```
 
-## Limitations
+---
 
-- Rate limiting is **in-process** — it throttles what this plugin dispatches, not what
-  the model emits elsewhere.
-- Compaction asks the orchestrator to distill; it cannot force a small model to
-  comply, and it does not truncate the conversation itself.
-- Lane doctrine and the refine loop are prompt contracts: a weak model can still ignore
-  them (same trust model as every prompt-based tool).
-- `opencode run "/swarm ..."` does not resolve slash commands (OpenCode CLI limitation);
-  use the TUI or the command API.
-- The relay file is append-only markdown shared by concurrent lanes; on very fast parallel
-  writers, last-append-wins is possible (same trust model as shared files generally).
-- The role registry is agent-writable by design: a bad edit can degrade a custom role
-  brief (the file is plain markdown, so it is easy to inspect and fix; built-in briefs
-  are only affected by an explicit `role:` block on their slug).
+## Development
 
-## Roadmap (v1.4.x)
+```bash
+bun install
+bun run typecheck
+bun run test
+```
 
-- [x] Adaptive lane rubric + anti-default guarantee + per-task lane hint
-- [x] Lane doctrine (7 working rules in every lane brief)
-- [x] Lane-to-lane relay communication (append-only shared file)
-- [x] Specialist role briefs (architect/builder/verifier added to coder/researcher/reviewer/multimodal)
-- [x] Refine/reiterate loop with early stop on convergence
-- [x] Extensible role registry - add / modify / broaden roles at runtime
-      (`/swarm-roles`, `extends:` chains, cycle-safe resolution, hot-reloaded skill)
-- [ ] Optional relay rotation per run (archive + fresh relay)
-- [ ] Worktree-aware lanes (parallel file isolation)
-- [ ] Registry diff/undo (`/swarm-roles` snapshots before each update)
+Project layout:
 
-## License / Attribution
+```
+src/
+  index.ts            # OpenCode plugin entry (swarm skill, commands, runtime tools)
+  runtime/
+    scheduler.ts      # Adaptive topology scheduler (cost-aware)
+    predictor.ts      # Nine-field snake_case predictor contract
+    provider.ts       # Router, ProviderHealth, circuit breaker
+    trust.ts          # TrustStore, trust scoring
+    portfolio-router.ts  # Trust-aware portfolio routing
+    mixed-strategy.ts    # Mixed-strategy scheduler
+    coordinator.ts    # RunCoordinator, crash recovery
+    run-manifest.ts   # RunManifestStore, idempotent opId dedupe
+    checkpoint.ts     # Checkpoints, snapshots, selective rollback
+    capsules.ts       # Versioned context capsules
+    chaos.ts          # Opt-in chaos injection
+    dashboards.ts     # Scheduler / provider / calibration dashboards
+    telemetry.ts      # Durable event log
+    history.ts        # Run history and task-shape baselines
+test/
+  *.test.ts           # 19 suites, 991 checks
+benchmark/
+  SPEC.md             # 8-independent-task benchmark fixture
+  workspace/          # Self-contained TypeScript modules, one defect each
+  tests/              # bun test objectives per task
+docs/
+  ARCHITECTURE.md     # Runtime components, data flow, failure / recovery
+  BENCHMARKS.md       # Methodology, raw vs corrected numbers, outage disclosure
+  CONFIGURATION.md    # Configuration reference
+```
 
-Copyright (c) 2026 **Arihant Bharanidhran** `<arihantbharani@outlook.com>`.
-All rights reserved. Every markdown payload emitted by this plugin (skill content,
-memory seed) carries an attribution comment; the memory seed additionally carries a
-hidden zero-width watermark that decodes to `SWARMLITE/ARIHANT/2026`.
+New scheduler behavior must include tests. Benchmark claims must carry evidence
+(methodology, timing definitions, raw vs corrected figures).
+
+---
+
+## Benchmark Reproducibility
+
+Benchmark assets under `benchmark/`:
+
+- `SPEC.md` — 8 independent engineering tasks, one defect each
+- `workspace/` — self-contained TypeScript modules (`t1-comparator.ts` … `t8-lcs.ts`)
+- `tests/` — objective `bun test` per task (fails on pristine module, passes on fix)
+- `run-tests.ts` / `run-tests-core.ts` — test harness
+- `BATCH-7-REPORT.md` — full Batch 7 report with all 22 sections
+
+Do not upload secret-bearing logs, giant temporary workspaces, or environment-specific
+junk. `benchmark/logs/wave1-partial/` contains temporary debug output and is excluded
+by `.gitignore`.
+
+---
+
+## License
+
+MIT License. Copyright (c) 2026 Arihant Bharanidhran
+<arihantbharani@outlook.com>. See `LICENSE`.
+
+---
+
+## Contributing
+
+See `CONTRIBUTING.md`. Summary:
+
+- `bun install`, `bun run typecheck` (exit 0), `bun run test` (all green)
+- New scheduler behavior must include tests
+- Benchmark claims must carry evidence
+- No provider quota evasion; no secrets committed
+
+---
+
+## Security
+
+See `SECURITY.md`. Summary:
+
+- Users are responsible for their own provider API keys; keep keys local and
+  environment-based; never commit keys
+- Provider rate limits and quotas must be respected; the runtime does not bypass them
+- Report vulnerabilities responsibly via GitHub private vulnerability reporting

@@ -1,3 +1,28 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Packaged plugin releases (old tarballs kept locally, never published)
 *.tgz
-.env*
+
+# Local secret / env files (never commit credentials)
+.env
+.env.*
+
+# Logs
+*.log
+benchmark/logs/
+
+# Output / build
+dist/
+coverage/
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
